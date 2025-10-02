@@ -1,0 +1,237 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grafana-dashboard-importer
+spec:
+  template:
+    spec:
+      containers:
+      - name: dashboard-importer
+        image: google/cloud-sdk:alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Install jq
+          apk add --no-cache jq
+          
+          GRAFANA_URL=$(cat /etc/grafana-auth/grafana-url)
+          ADMIN_USER=$(cat /etc/grafana-auth/admin-user)
+          ADMIN_PASSWORD=$(cat /etc/grafana-auth/admin-password)
+          
+          # Folder configuration
+          FOLDER_TITLE="Admins Cluster Monitoring"
+          
+          echo "========================================="
+          echo "Simple Dashboard Importer Started"
+          echo "Time: $(date)"
+          echo "Target Folder: $FOLDER_TITLE"
+          echo "========================================="
+          
+          # Function to get or create folder
+          get_or_create_folder() {
+            local folder_title="$1"
+            
+            echo "🗂️  Checking for folder: $folder_title" >&2
+            
+            # Search for existing folder
+            FOLDER_SEARCH=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/folders")
+            FOLDER_ID=$(echo "$FOLDER_SEARCH" | jq -r --arg title "$folder_title" '.[] | select(.title == $title) | .id')
+            
+            if [ -n "$FOLDER_ID" ] && [ "$FOLDER_ID" != "null" ]; then
+              echo "✅ Found existing folder: $folder_title (ID: $FOLDER_ID)" >&2
+              echo "$FOLDER_ID"
+              return
+            fi
+            
+            echo "📁 Creating new folder: $folder_title" >&2
+            
+            # Create folder
+            FOLDER_UID=$(echo "$folder_title" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g' | sed 's/[^a-z0-9-]//g')
+            CREATE_RESPONSE=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -d "{\"uid\": \"$FOLDER_UID\", \"title\": \"$folder_title\"}" \
+              "$GRAFANA_URL/api/folders")
+            
+            # Check creation result
+            if [ "$(echo "$CREATE_RESPONSE" | jq -r '.id // empty')" != "" ]; then
+              NEW_FOLDER_ID=$(echo "$CREATE_RESPONSE" | jq -r '.id')
+              echo "✅ Successfully created folder: $folder_title (ID: $NEW_FOLDER_ID)" >&2
+              echo "$NEW_FOLDER_ID"
+            else
+              echo "❌ Failed to create folder: $folder_title" >&2
+              echo "   Error: $(echo "$CREATE_RESPONSE" | jq -r '.message // "Unknown error"')" >&2
+              echo "0"  # Return default folder ID
+            fi
+          }
+          
+          # Get target folder ID
+          TARGET_FOLDER_ID=$(get_or_create_folder "$FOLDER_TITLE")
+          
+          echo "🎯 Target Folder ID: '$TARGET_FOLDER_ID'"
+          
+          if [ "$TARGET_FOLDER_ID" = "0" ]; then
+            echo "⚠️  Folder creation failed. Dashboards will be created in the default folder."
+            FOLDER_TITLE="Default"
+          fi
+          
+          # List of dashboards to import
+          # You can modify these URLs to point to your dashboard sources
+          DASHBOARDS="
+          https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/master/dashboards/k8s-system-api-server.json
+          https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/master/dashboards/k8s-system-coredns.json
+          https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/master/dashboards/k8s-views-namespaces.json
+          https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/master/dashboards/k8s-views-nodes.json
+          https://raw.githubusercontent.com/dotdc/grafana-dashboards-kubernetes/master/dashboards/k8s-views-pods.json
+          "
+          
+          # Alternative: You can also define dashboards from ConfigMaps
+          # CONFIGMAP_DASHBOARDS="dashboard1 dashboard2 dashboard3"
+          
+          success_count=0
+          error_count=0
+          
+          # Import dashboards from URLs
+          for dashboard_url in $DASHBOARDS; do
+            if [ -z "$dashboard_url" ]; then
+              continue
+            fi
+            
+            dashboard_name=$(basename "$dashboard_url" .json)
+            echo ""
+            echo "--- Processing: $dashboard_name ---"
+            echo "URL: $dashboard_url"
+            
+            # Download the dashboard JSON
+            echo "📥 Downloading dashboard..."
+            DASHBOARD_JSON=$(curl -s "$dashboard_url")
+            
+            if [ $? -ne 0 ] || [ -z "$DASHBOARD_JSON" ]; then
+              echo "❌ Failed to download dashboard from $dashboard_url"
+              error_count=$((error_count + 1))
+              continue
+            fi
+            
+            # Validate JSON
+            if ! echo "$DASHBOARD_JSON" | jq empty 2>/dev/null; then
+              echo "❌ Invalid JSON downloaded from $dashboard_url"
+              error_count=$((error_count + 1))
+              continue
+            fi
+            
+            # Get dashboard title and UID from JSON
+            DASHBOARD_TITLE=$(echo "$DASHBOARD_JSON" | jq -r '.title // "Unknown"')
+            DASHBOARD_UID=$(echo "$DASHBOARD_JSON" | jq -r '.uid // ""')
+            
+            echo "📊 Dashboard: $DASHBOARD_TITLE"
+            echo "🔑 UID: $DASHBOARD_UID"
+            
+            # Check if dashboard already exists (if UID is present)
+            if [ -n "$DASHBOARD_UID" ] && [ "$DASHBOARD_UID" != "null" ]; then
+              EXISTS=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/dashboards/uid/$DASHBOARD_UID")
+              if [ "$(echo "$EXISTS" | jq -r '.dashboard.id // empty')" != "" ]; then
+                echo "⚠️  Dashboard already exists. Updating..."
+                OVERWRITE="true"
+              else
+                echo "✨ New dashboard. Creating..."
+                OVERWRITE="false"
+              fi
+            else
+              echo "⚠️  No UID found, will create new dashboard"
+              OVERWRITE="false"
+            fi
+            
+            # Clean the JSON (remove id, set overwrite)
+            CLEAN_JSON=$(echo "$DASHBOARD_JSON" | jq 'del(.id)')
+            
+            # Import the dashboard
+            echo "🚀 Importing dashboard to folder: $FOLDER_TITLE (ID: $TARGET_FOLDER_ID)..."
+            IMPORT_RESPONSE=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+              -X POST \
+              -H "Content-Type: application/json" \
+              -d "{\"dashboard\": $CLEAN_JSON, \"folderId\": $TARGET_FOLDER_ID, \"overwrite\": $OVERWRITE}" \
+              "$GRAFANA_URL/api/dashboards/db")
+            
+            # Check import result
+            if [ "$(echo "$IMPORT_RESPONSE" | jq -r '.status')" = "success" ]; then
+              DASHBOARD_ID=$(echo "$IMPORT_RESPONSE" | jq -r '.id')
+              DASHBOARD_URL=$(echo "$IMPORT_RESPONSE" | jq -r '.url')
+              echo "✅ Successfully imported: $DASHBOARD_TITLE"
+              echo "   📍 Location: $FOLDER_TITLE folder"
+              echo "   🔗 Dashboard ID: $DASHBOARD_ID"
+              echo "   📊 URL: $DASHBOARD_URL"
+              success_count=$((success_count + 1))
+            else
+              echo "❌ Failed to import dashboard: $DASHBOARD_TITLE"
+              echo "   Error: $(echo "$IMPORT_RESPONSE" | jq -r '.message // "Unknown error"')"
+              error_count=$((error_count + 1))
+            fi
+          done
+          
+          # Optional: Import dashboards from ConfigMaps
+          # Uncomment the section below if you want to import from ConfigMaps
+          
+          # echo ""
+          # echo "========================================="
+          # echo "Importing from ConfigMaps..."
+          # echo "========================================="
+          # 
+          # for configmap_name in $CONFIGMAP_DASHBOARDS; do
+          #   if [ -z "$configmap_name" ]; then
+          #     continue
+          #   fi
+          #   
+          #   echo ""
+          #   echo "--- Processing ConfigMap: $configmap_name ---"
+          #   
+          #   # Read from mounted configmap
+          #   DASHBOARD_JSON=$(cat "/etc/dashboards/$configmap_name.json" 2>/dev/null)
+          #   
+          #   if [ -z "$DASHBOARD_JSON" ]; then
+          #     echo "❌ Failed to read dashboard from configmap: $configmap_name"
+          #     error_count=$((error_count + 1))
+          #     continue
+          #   fi
+          #   
+          #   # Same import logic as above...
+          #   # [Rest of import code would go here]
+          # done
+
+          echo ""
+          echo "========================================="
+          echo "Dashboard Import Summary"
+          echo "========================================="
+          echo "📁 Target Folder: $FOLDER_TITLE"
+          echo "✅ Successfully imported: $success_count dashboards"
+          echo "❌ Failed imports: $error_count dashboards"
+          echo "⏰ Completed at: $(date)"
+          echo "========================================="
+          
+          if [ $error_count -gt 0 ]; then
+            echo "⚠️  Some dashboards failed to import. Check logs above for details."
+            exit 1
+          else
+            echo "🎉 All dashboards successfully imported to '$FOLDER_TITLE' folder!"
+          fi
+        volumeMounts:
+        - name: grafana-auth
+          mountPath: /etc/grafana-auth
+          readOnly: true
+      volumes:
+      - name: grafana-auth
+        secret:
+          secretName: kube-prometheus-stack-grafana
+          items:
+          - key: admin-user
+            path: admin-user
+          - key: admin-password
+            path: admin-password
+          - key: grafana-url
+            path: grafana-url
+      # Uncomment below if you want to import from ConfigMaps
+      # - name: dashboard-files
+      #   configMap:
+      #     name: dashboard-collection
+      restartPolicy: OnFailure

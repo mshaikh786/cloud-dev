@@ -1,0 +1,9 @@
+---
+- name: Add additional RKE2 Servers
+  hosts: servers
+  gather_facts: true
+  roles:
+    - role: helm
+      state: present
+  
+      

@@ -1,0 +1,28 @@
+---
+- name: Install IPA server
+  hosts: ipaserver
+  become: true
+
+  pre_tasks:
+    - name: Update OpenSSH to the latest version
+      dnf:
+        name:
+          - openssh
+          - openssh-server
+          - openssh-clients
+        state: latest
+        update_cache: yes
+
+    - name: Update host files
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ ansible_default_ipv4.address }} {{ ipaserver_hostname}} {{ ipaserver_hostname }}"
+        state: present
+
+    - name: Ensure hostname is properly set
+      ansible.builtin.hostname:
+        name: "{{ ipaserver_hostname}}"
+
+  roles:
+    - role: freeipa.ansible_freeipa.ipaserver
+      state: present

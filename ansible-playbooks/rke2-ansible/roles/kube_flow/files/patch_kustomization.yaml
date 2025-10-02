@@ -1,0 +1,7 @@
+- op: add
+  path: /spec/template/spec/tolerations
+  value:
+      - key: kubeflow_installation
+        operator: Equal
+        value: true
+        effect: PreferNoSchedule

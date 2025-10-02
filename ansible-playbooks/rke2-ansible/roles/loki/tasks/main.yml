@@ -1,0 +1,255 @@
+---
+- name: Add Grafana Helm repository
+  ansible.builtin.shell: helm repo add grafana https://grafana.github.io/helm-charts
+  register: helm_repo_result
+  changed_when: "'has been added' in helm_repo_result.stdout"
+  failed_when: 
+    - helm_repo_result.rc != 0
+    - "'already exists' not in helm_repo_result.stderr"
+
+- name: Update Helm repositories
+  ansible.builtin.shell: helm repo update
+  register: helm_update_result
+  changed_when: "'Update Complete' in helm_update_result.stdout"
+
+- name: Create namespace for Loki
+  ansible.builtin.shell: |
+    kubectl create namespace {{ loki_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+  register: namespace_result
+  changed_when: "'created' in namespace_result.stdout or 'configured' in namespace_result.stdout"
+
+- name: Check if htpasswd command is available
+  ansible.builtin.shell: which htpasswd
+  register: htpasswd_check
+  failed_when: false
+  changed_when: false
+
+- name: Install apache2-utils if htpasswd is not available (Debian/Ubuntu)
+  ansible.builtin.shell: apt-get update && apt-get install -y apache2-utils
+  when: 
+    - htpasswd_check.rc != 0
+  become: true
+
+
+- name: Create htpasswd file for basic auth
+  ansible.builtin.shell: |
+    htpasswd -c -b /tmp/.htpasswd {{ loki_username }} {{ loki_password }}
+  register: htpasswd_result
+  changed_when: true
+
+- name: Check if loki-basic-auth secret exists
+  ansible.builtin.shell: kubectl get secret loki-basic-auth -n {{ loki_namespace }}
+  register: basic_auth_secret_check
+  failed_when: false
+  changed_when: false
+
+- name: Create loki-basic-auth secret
+  ansible.builtin.shell: |
+    kubectl create secret generic loki-basic-auth --from-file=/tmp/.htpasswd -n {{ loki_namespace }}
+  register: basic_auth_secret_result
+  when: basic_auth_secret_check.rc != 0
+  changed_when: "'created' in basic_auth_secret_result.stdout"
+
+- name: Update loki-basic-auth secret if it exists
+  ansible.builtin.shell: |
+    kubectl delete secret loki-basic-auth -n {{ loki_namespace }} &&
+    kubectl create secret generic loki-basic-auth --from-file=/tmp/.htpasswd -n {{ loki_namespace }}
+  register: basic_auth_secret_update
+  when: basic_auth_secret_check.rc == 0
+  changed_when: "'created' in basic_auth_secret_update.stdout"
+
+- name: Check if canary-basic-auth secret exists
+  ansible.builtin.shell: kubectl get secret canary-basic-auth -n {{ loki_namespace }}
+  register: canary_auth_secret_check
+  failed_when: false
+  changed_when: false
+
+- name: Create canary-basic-auth secret
+  ansible.builtin.shell: |
+    kubectl create secret generic canary-basic-auth \
+      --from-literal=username={{ loki_username }} \
+      --from-literal=password={{ loki_password }} \
+      -n {{ loki_namespace }}
+  register: canary_auth_secret_result
+  when: canary_auth_secret_check.rc != 0
+  changed_when: "'created' in canary_auth_secret_result.stdout"
+
+- name: Update canary-basic-auth secret if it exists
+  ansible.builtin.shell: |
+    kubectl delete secret canary-basic-auth -n {{ loki_namespace }} &&
+    kubectl create secret generic canary-basic-auth \
+      --from-literal=username={{ loki_username }} \
+      --from-literal=password={{ loki_password }} \
+      -n {{ loki_namespace }}
+  register: canary_auth_secret_update
+  when: canary_auth_secret_check.rc == 0
+  changed_when: "'created' in canary_auth_secret_update.stdout"
+
+- name: Create Loki values file
+  ansible.builtin.shell: |
+    cat > /tmp/loki-values.yaml << 'EOF'
+    loki:
+      schemaConfig:
+        configs:
+          - from: "2024-04-01"
+            store: tsdb
+            object_store: s3
+            schema: v13
+            index:
+              prefix: loki_index_
+              period: 24h
+      storage_config:
+        aws:
+          endpoint: {{ s3_endpoint }}
+          region: {{ s3_region }}
+          access_key_id: {{ s3_access_key }}
+          secret_access_key: {{ s3_secret_key }}
+          bucketnames: {{ s3_chunks_bucket }}
+          s3forcepathstyle: false
+          insecure: false
+      ingester:
+        chunk_encoding: snappy
+      pattern_ingester:
+        enabled: true
+      limits_config:
+        allow_structured_metadata: true
+        volume_enabled: true
+        retention_period: {{ log_retention_days * 24 }}h
+      compactor:
+        retention_enabled: true
+        delete_request_store: s3
+      ruler:
+        enable_api: true
+        storage:
+          type: s3
+          s3:
+            endpoint: {{ s3_endpoint }}
+            region: {{ s3_region }}
+            access_key_id: {{ s3_access_key }}
+            secret_access_key: {{ s3_secret_key }}
+            bucketnames: {{ s3_ruler_bucket }}
+            s3forcepathstyle: false
+            insecure: false
+        alertmanager_url: {{ alertmanager_url }}
+      querier:
+        max_concurrent: 4
+      storage:
+        type: s3
+        bucketNames:
+          chunks: "{{ s3_chunks_bucket }}"
+          ruler: "{{ s3_ruler_bucket }}"
+        s3:
+          endpoint: {{ s3_endpoint }}
+          region: {{ s3_region }}
+          access_key_id: {{ s3_access_key }}
+          secret_access_key: {{ s3_secret_key }}
+          insecure: false
+          s3forcepathstyle: false
+
+    serviceAccount:
+      create: true
+
+    deploymentMode: Distributed
+
+    ingester:
+      replicas: 3
+      zoneAwareReplication:
+        enabled: false
+
+    querier:
+      replicas: 3
+      maxUnavailable: 2
+
+    queryFrontend:
+      replicas: 2
+      maxUnavailable: 1
+
+    queryScheduler:
+      replicas: 2
+
+    distributor:
+      replicas: 3
+      maxUnavailable: 2
+
+    compactor:
+      replicas: 1
+
+    indexGateway:
+      replicas: 2
+      maxUnavailable: 1
+
+    ruler:
+      replicas: 1
+      maxUnavailable: 1
+
+    gateway:
+      service:
+        type: ClusterIP
+      basicAuth: 
+        enabled: true
+        existingSecret: loki-basic-auth
+      nginxConfig:
+        resolver: "rke2-coredns-rke2-coredns.kube-system.svc.cluster.local"
+
+    lokiCanary:
+      enabled: true
+      extraArgs:
+        - -pass=$(LOKI_PASS)
+        - -user=$(LOKI_USER)
+      extraEnv:
+        - name: LOKI_PASS
+          valueFrom:
+            secretKeyRef:
+              name: canary-basic-auth
+              key: password
+        - name: LOKI_USER
+          valueFrom:
+            secretKeyRef:
+              name: canary-basic-auth
+              key: username
+
+    minio:
+      enabled: false
+
+    backend:
+      replicas: 0
+
+    read:
+      replicas: 0
+
+    write:
+      replicas: 0
+
+    singleBinary:
+      replicas: 0
+    EOF
+  register: values_file_result
+  changed_when: true
+
+
+- name: Install or Upgrade Loki if already installed
+  ansible.builtin.shell: |
+    helm upgrade --install {{ loki_release_name }} grafana/loki \
+      --namespace {{ loki_namespace }} \
+      --values /tmp/loki-values.yaml
+  register: helm_upgrade_result
+  changed_when: "'STATUS: deployed' in helm_upgrade_result.stdout"
+
+
+- name: Verify Loki installation
+  ansible.builtin.shell: kubectl get pods -n {{ loki_namespace }} -l app.kubernetes.io/name=loki
+  register: pods_status
+  changed_when: false
+
+- name: Display Loki status
+  ansible.builtin.debug:
+    msg: "{{ pods_status.stdout_lines }}"
+
+- name: Clean up temporary files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/.htpasswd
+    - /tmp/loki-values.yaml
+  changed_when: false

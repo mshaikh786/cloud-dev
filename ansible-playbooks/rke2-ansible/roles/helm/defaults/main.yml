@@ -1,0 +1,3 @@
+---
+# defaults file for helm
+helm_version: v3.9.0

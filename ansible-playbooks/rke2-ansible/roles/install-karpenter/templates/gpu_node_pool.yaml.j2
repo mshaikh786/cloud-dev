@@ -1,0 +1,31 @@
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: gpu-nodepool
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["g"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: kubernetes.io/os
+          operator: In
+          values: ["linux"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["g4dn.xlarge"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+      nodeClassRef:
+        name: gpu-nodeclass
+        kind: EC2NodeClass
+        group: karpenter.k8s.aws
+      expireAfter: {{ karpenter.ttl_hours }}
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: {{ karpenter.consolidate_after }}

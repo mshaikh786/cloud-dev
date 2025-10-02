@@ -1,0 +1,25 @@
+---
+# GPU Operator settings
+gpu_operator_namespace: "gpu-operator"
+gpu_operator_release_name: "gpu-operator"
+
+# Helm repo settings
+nvidia_helm_repo: "https://helm.ngc.nvidia.com/nvidia"
+
+# RKE2 settings
+rke2_data_dir: "/var/lib/rancher/rke2"
+rke2_containerd_config: "{{ rke2_data_dir }}/agent/etc/containerd/config.toml.tmpl"
+rke2_containerd_socket: "/run/k3s/containerd/containerd.sock"
+
+# Kubernetes settings
+kubeconfig_path: "/etc/rancher/rke2/rke2.yaml"
+
+# Driver settings - change as needed
+driver_enabled: "true"
+
+# Operator settings
+default_runtime: "containerd"
+
+# DCGM Exporter settings
+dcgm_exporter_enabled: "true"
+dcgm_exporter_config_name: "default-dcgm-config"

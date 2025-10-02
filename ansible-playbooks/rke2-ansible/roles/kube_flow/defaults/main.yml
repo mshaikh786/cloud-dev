@@ -1,0 +1,15 @@
+---
+# defaults file for kube_flow
+ldap_add_conf: true
+#ldap options
+ldap_ip: 10.0.1.110
+binddn: uid=admin,cn=users,cn=accounts,dc=kaust,dc=local
+bindpw: admin2026
+basedn: dc=kaust,dc=local
+
+install_cert_manager: true
+
+kubeflow_version: v1.9.1
+
+# NFS server for user cache storage
+nfs_server: 10.0.0.75

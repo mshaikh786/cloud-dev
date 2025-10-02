@@ -1,0 +1,28 @@
+
+# Namespace configuration
+grafana_namespace: "monitoring"
+
+# Grafana configuration
+GRAFANA_URL: "http://prometheus-grafana.monitoring.svc.cluster.local"
+grafana_admin_user: "admin"
+grafana_admin_password: "kaust-operator"
+grafana_port: "80"
+
+# LDAP configuration for the projects configrations
+LDAP_PROJECT_GROUP_ANNOTATION: "grafana-project-"
+LDAP_PROJECT_ADMIN_GROUP_ANNOTATION: "grafana-admins-project-"  #PI's of Project
+
+# LDAP credentials
+ldap_base_dn: "dc=kaust,dc=local"
+ldap_password: "admin2026"
+ldap_server: "63.176.217.151"
+ldap_username: "uid=admin,cn=users,cn=accounts,dc=kaust,dc=local"
+
+
+# File paths for dashboard configurations
+user_dashboard_config_file: "user-dashboard-config.yaml"
+cronjob_user_file: "cronjob-user-dashboards.yaml"
+cronjob_pl_file: "cronjob-pl-dashboards-new.yaml"
+k8s_admins_file: "k8s-admins-dashboards.yaml"
+folder_permissions_file: "folder_permissions.yaml"
+rbac_role_file: "rbac-role.yaml"

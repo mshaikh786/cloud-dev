@@ -1,0 +1,91 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+
+- name: Install python3-pip
+  apt:
+    name: python3-pip
+    state: present
+
+- name: Install kubernetes Python package via pip3
+  pip:
+    name: kubernetes
+    executable: pip3
+
+
+- name: Ensure Karpenter namespace exists
+  kubernetes.core.k8s:
+    api_version: v1
+    kind: Namespace
+    name: "{{ karpenter.namespace }}"
+    state: present
+  become: true
+
+
+- name: Gather all nodes in the cluster
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: cluster_nodes
+
+- name: Label nodes dynamically with availability zone
+  kubernetes.core.k8s:
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    api_version: v1
+    definition:
+      metadata:
+        labels:
+          topology.kubernetes.io/zone: "{{ karpenter.availability_zone }}"
+  loop: "{{ cluster_nodes.resources }}"
+
+
+- name: Install or upgrade Karpenter via Helm
+  community.kubernetes.helm:
+    name: karpenter
+    chart_ref: oci://public.ecr.aws/karpenter/karpenter
+    release_namespace: karpenter
+    create_namespace: true
+    reset_values: true
+    wait: true
+    values:
+      settings:
+        clusterName: "{{ karpenter.cluster_name }}"
+        clusterEndpoint: "https://{{ hostvars[groups['servers'][0]].ansible_host }}:6443"
+        eksControlPlane: false
+      replicas: 1
+      topologySpreadConstraints: []
+      controller:
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        topologySpreadConstraints: []
+
+- name: Apply EC2NodeClass manifest
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'ec2_node_class.yaml.j2') | from_yaml }}"
+  become: true
+
+- name: Apply NodePool manifest
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'node_pool.yaml.j2') | from_yaml }}"
+  become: true
+
+
+- name: Apply GPU EC2NodeClass manifest
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'ec2_gpu_node_class.yaml.j2') | from_yaml }}"
+  become: true
+
+- name: Apply GPU NodePool manifest
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'gpu_node_pool.yaml.j2') | from_yaml }}"
+  become: true

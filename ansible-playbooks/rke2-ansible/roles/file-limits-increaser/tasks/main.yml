@@ -1,0 +1,116 @@
+---
+# file-limits-increaser/tasks/main.yml
+
+- name: Set higher global file-max parameter
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/98-rke2-file-max.conf
+    content: |
+      # Increase maximum number of file handles for the system
+      fs.file-max = 6553600
+    mode: '0644'
+  become: true
+  register: global_file_max_updated
+
+- name: Increase inotify watches limit for RKE2 agents on Ubuntu
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-rke2-inotify.conf
+    content: |
+      # Increase inotify limits for Kubeflow on RKE2
+      fs.inotify.max_user_instances = 16384
+      fs.inotify.max_user_watches = 1048576
+      fs.inotify.max_queued_events = 1048576
+    mode: '0644'
+  become: true
+  register: sysctl_config_updated
+
+- name: Apply sysctl changes if configuration was updated
+  ansible.builtin.command: sysctl --system
+  become: true
+  when: sysctl_config_updated.changed or global_file_max_updated.changed
+  changed_when: sysctl_config_updated.changed or global_file_max_updated.changed
+
+- name: Increase file descriptor limits for RKE2 agents
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/99-rke2-limits.conf
+    content: |
+      # Increase file descriptor limits for RKE2 kubernetes workloads
+      * soft nofile 1048576
+      * hard nofile 1048576
+      root soft nofile 1048576
+      root hard nofile 1048576
+      
+      # Set nproc limits higher too
+      * soft nproc 262144
+      * hard nproc 262144
+      root soft nproc 262144
+      root hard nproc 262144
+    mode: '0644'
+  become: true
+  register: limits_config_updated
+
+- name: Ensure limits.conf is included in PAM configuration
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/common-session
+    line: "session required pam_limits.so"
+    state: present
+  become: true
+
+- name: Ensure limits.conf is included in PAM configuration (common-session-noninteractive)
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/common-session-noninteractive
+    line: "session required pam_limits.so"
+    state: present
+    create: true
+  become: true
+
+- name: Create systemd override directory for RKE2 agent service
+  ansible.builtin.file:
+    path: /etc/systemd/system/rke2-agent.service.d/
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Configure systemd limits for RKE2 agent service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/rke2-agent.service.d/limits.conf
+    content: |
+      [Service]
+      LimitNOFILE=1048576
+      LimitNPROC=262144
+      LimitCORE=infinity
+      LimitMEMLOCK=infinity
+      TasksMax=infinity
+    mode: '0644'
+  become: true
+  register: systemd_config_updated
+
+- name: Modify default systemd system.conf to increase DefaultLimitNOFILE
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/system.conf
+    regexp: '^#?DefaultLimitNOFILE='
+    line: 'DefaultLimitNOFILE=1048576'
+    state: present
+  become: true
+  register: systemd_system_updated
+
+- name: Modify default systemd user.conf to increase DefaultLimitNOFILE
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/user.conf
+    regexp: '^#?DefaultLimitNOFILE='
+    line: 'DefaultLimitNOFILE=1048576'
+    state: present
+  become: true
+  register: systemd_user_updated
+
+- name: Reload systemd daemon if configuration was updated
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  become: true
+  when: systemd_config_updated.changed or systemd_system_updated.changed or systemd_user_updated.changed
+
+- name: Restart RKE2 agent service if configuration was updated
+  ansible.builtin.systemd:
+    name: rke2-agent
+    state: restarted
+  become: true
+  when: systemd_config_updated.changed or sysctl_config_updated.changed or global_file_max_updated.changed or limits_config_updated.changed

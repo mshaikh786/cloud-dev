@@ -1,0 +1,24 @@
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: gpu-nodeclass
+spec:
+  subnetSelectorTerms:
+    - id: "{{ hostvars['ec2_metadata_store']['subnet_id'] }}"
+  securityGroupSelectorTerms:
+    - id: "{{ hostvars['ec2_metadata_store']['sg_ids'] }}"
+  amiFamily: Custom
+  amiSelectorTerms:
+    - id: "{{ hostvars['ec2_metadata_store']['ami_id'] }}"
+  instanceProfile: "{{ karpenter.cluster_name }}-instance-profile"
+  blockDeviceMappings:
+    - deviceName: "/dev/sda1"
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+  tags:
+    Name: "karpenter-gpu-node"
+    managed_by: "{{karpenter.managed_by}}"
+    cluster: "{{karpenter.cluster_name}}"
+
+  userData: "{{ lookup('template', 'userdata.sh.j2') | b64encode }}"

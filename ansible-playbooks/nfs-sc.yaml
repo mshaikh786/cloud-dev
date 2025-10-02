@@ -1,0 +1,16 @@
+- name: Install NFS client utilities on all nodes
+  hosts: rke2
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Install NFS utilities on Ubuntu
+      apt:
+        name: nfs-common
+        state: present
+
+- name: Setup NFS StorageClass
+  hosts: server1
+  gather_facts: false
+  become: true
+  roles:
+    - nfs_sc

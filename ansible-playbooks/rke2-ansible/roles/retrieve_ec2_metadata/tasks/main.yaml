@@ -1,0 +1,44 @@
+---
+
+- name: Get EC2 MAC address
+  shell: curl -s http://169.254.169.254/latest/meta-data/mac
+  register: mac
+  changed_when: false
+
+- name: Get EC2 Subnet ID
+  shell: curl -s http://169.254.169.254/latest/meta-data/network/interfaces/macs/{{ mac.stdout }}/subnet-id
+  register: subnet_id
+  changed_when: false
+
+- name: Store EC2 metadata globally
+  add_host:
+    name: "ec2_metadata_store"
+    subnet_id: "{{ subnet_id.stdout }}"
+  run_once: true
+
+- name: Get EC2 Security Group IDs
+  shell: curl -s http://169.254.169.254/latest/meta-data/network/interfaces/macs/{{ mac.stdout }}/security-group-ids
+  register: sg_ids
+  changed_when: false
+
+- name: Get EC2 AMI ID
+  shell: curl -s http://169.254.169.254/latest/meta-data/ami-id
+  register: ami_id
+  changed_when: false
+
+- name: Store all EC2 metadata globally
+  add_host:
+    name: "ec2_metadata_store"
+    subnet_id: "{{ subnet_id.stdout }}"
+    sg_ids: "{{ sg_ids.stdout }}"
+    ami_id: "{{ ami_id.stdout }}"
+  run_once: true
+
+- name: Show EC2 metadata
+  debug:
+    msg:
+      subnet_id: "{{ hostvars['ec2_metadata_store']['subnet_id'] }}"
+      security_group_ids: "{{ hostvars['ec2_metadata_store']['sg_ids'] }}"
+      ami_id: "{{ hostvars['ec2_metadata_store']['ami_id'] }}"
+
+

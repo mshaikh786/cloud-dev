@@ -1,0 +1,9 @@
+---
+- name: Deploy Prometheus Stack
+  hosts: server1
+  gather_facts: false
+  become: false
+
+  roles:
+    - telemetry_grafana
+

@@ -1,0 +1,204 @@
+---
+# tasks/main.yml - Ansible tasks for installing Prometheus and Grafana stack
+- name: Create temporary directory for manifests
+  tempfile:
+    state: directory
+    suffix: _prometheus_grafana
+  register: temp_dir
+  
+- name: Add prometheus-community helm repository
+  shell: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+  register: helm_repo_add
+  changed_when: "'already exists' not in helm_repo_add.stderr"
+  failed_when: 
+    - helm_repo_add.rc != 0
+    - "'already exists' not in helm_repo_add.stderr"
+
+- name: Update helm repositories
+  shell: helm repo update
+  register: helm_repo_update
+  changed_when: helm_repo_update.rc == 0
+
+- name: Create monitoring namespace
+  shell: kubectl create namespace {{ grafana_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+  register: namespace_result
+  changed_when: "'created' in namespace_result.stdout"
+
+- name: Create thanos namespace
+  shell: kubectl create namespace thanos --dry-run=client -o yaml | kubectl apply -f -
+  register: namespace_result
+  changed_when: "'created' in namespace_result.stdout"
+  when: thanos_enabled | default(false)
+
+# Create directory for Thanos manifests
+- name: Create thanos manifests directory
+  file:
+    path: /tmp/thanos-manifests
+    state: directory
+    mode: '0755'
+
+# Copy all YAML files from files folder
+- name: Copy thanos YAML files from files
+  copy:
+    src: "{{ item }}"
+    dest: /tmp/thanos-manifests/
+    mode: '0644'
+  with_fileglob:
+    - "files/*.yaml"
+    - "files/*.yml"
+
+# Copy file from templates folder
+- name: Copy thanos deployment from templates
+  template:
+    src: thanos-query-deployment.yaml.jq
+    dest: /tmp/thanos-manifests/thanos-query-deployment.yaml.jq
+    mode: '0644'
+
+# Apply all manifests using kubectl
+- name: Apply thanos manifests with kubectl
+  command: kubectl apply -f /tmp/thanos-manifests -n thanos
+  register: kubectl_result
+
+# Show kubectl output
+- name: Display kubectl results
+  debug:
+    var: kubectl_result.stdout_lines
+
+- name: Create temporary directory for manifests
+  tempfile:
+    state: directory
+    suffix: _prometheus_grafana
+  register: temp_dir
+
+- name: Generate LDAP ConfigMap from template
+  template:
+    src: ldap-configmap.yaml.jq
+    dest: "{{ temp_dir.path }}/ldap-configmap.yaml"
+  when: grafana_ldap_enabled | default(false)
+
+- name: Generate Helm values file from template
+  template:
+    src: values-chart.yaml.jq
+    dest: "{{ temp_dir.path }}/values.yaml"
+
+- name: Create Thanos object storage configuration file
+  template:
+    src: thanos-s3-config.yaml.jq
+    dest: "{{ temp_dir.path }}/thanos-object-storage.yaml"
+  when: thanos_enabled | default(false)
+
+- name: Create Thanos object storage secret for promethes (if Thanos is enabled)
+  shell: |
+    kubectl create secret generic {{ thanos_object_storage_secret }} \
+      --from-file=thanos.yaml={{ temp_dir.path }}/thanos-object-storage.yaml \
+      --namespace={{ grafana_namespace }} \
+      --dry-run=client -o yaml | kubectl apply -f -
+  register: thanos_secret_result
+  changed_when: "'created' in thanos_secret_result.stdout or 'configured' in thanos_secret_result.stdout"
+  when: thanos_enabled | default(false)
+  ignore_errors: true
+
+- name: Create Thanos object storage secret for thanos ns (if Thanos is enabled)
+  shell: |
+    kubectl create secret generic thanos-object-storage \
+      --from-file=thanos.yaml={{ temp_dir.path }}/thanos-object-storage.yaml \
+      --namespace=thanos \
+      --dry-run=client -o yaml | kubectl apply -f -
+  register: thanos_secret_result
+  changed_when: "'created' in thanos_secret_result.stdout or 'configured' in thanos_secret_result.stdout"
+  when: thanos_enabled | default(false)
+  ignore_errors: true
+
+- name: Apply LDAP ConfigMap
+  shell: kubectl apply -f {{ temp_dir.path }}/ldap-configmap.yaml
+  register: configmap_result
+  changed_when: "'created' in configmap_result.stdout or 'configured' in configmap_result.stdout"
+  when: grafana_ldap_enabled | default(false)
+
+
+- name: Install Prometheus Grafana stack using Helm
+  shell: |
+    helm upgrade --install {{ release_name }} prometheus-community/kube-prometheus-stack \
+      --namespace {{ grafana_namespace }} \
+      --values {{ temp_dir.path }}/values.yaml \
+      --timeout {{ helm_timeout | default('10m') }} \
+      --wait
+  register: helm_install_result
+
+
+- name: Get service information
+  shell: kubectl get services -n {{ grafana_namespace }} -l "app.kubernetes.io/part-of=kube-prometheus-stack"
+  register: services_info
+  changed_when: false
+
+- name: Display services information
+  debug:
+    msg: |
+      Services in {{ grafana_namespace }} namespace:
+      {{ services_info.stdout }}
+
+- name: Clean up temporary files
+  file:
+    path: "{{ temp_dir.path }}"
+    state: absent
+  when: cleanup_temp_files | default(true)
+
+- name: Clean up temporary files
+  file:
+    path: "/tmp/thanos-manifests"
+    state: absent
+  when: cleanup_temp_files | default(true)
+
+- name: Get pods status
+  shell: kubectl get pods -n {{ grafana_namespace }}
+  register: pods_status
+  changed_when: false
+
+- name: Display pods status
+  debug:
+    msg: |
+      Pods status in {{ grafana_namespace }} namespace:
+      {{ pods_status.stdout }}
+
+- name: Verify LDAP configuration (if enabled)
+  shell: kubectl get configmap grafana-ldap-config -n {{ grafana_namespace }} -o yaml
+  register: ldap_config_status
+  changed_when: false
+  when: grafana_ldap_enabled | default(false)
+
+- name: Display LDAP configuration status
+  debug:
+    msg: |
+      LDAP ConfigMap successfully created and applied.
+      To view the configuration: kubectl get configmap grafana-ldap-config -n {{ grafana_namespace }} -o yaml
+  when: 
+    - grafana_ldap_enabled | default(false)
+    - ldap_config_status.rc == 0
+
+- name: Final deployment summary
+  debug:
+    msg: |
+      ===============================================
+      Prometheus Grafana Stack Installation Complete
+      ===============================================
+      
+      To access the services:
+      {% if grafana_enabled | default(true) and grafana_ingress_enabled | default(true) %}
+      - Grafana: http://{{ grafana_ingress_host }}
+        Login: {{ grafana_admin_user }} / {{ grafana_admin_password }}
+      {% endif %}
+      {% if prometheus_enabled | default(true) and prometheus_ingress_enabled | default(true) %}
+      - Prometheus: http://{{ prometheus_ingress_host }}
+      {% endif %}
+      {% if alertmanager_enabled | default(true) and alertmanager_ingress_enabled | default(true) %}
+      - Alertmanager: http://{{ alertmanager_ingress_host }}
+      {% endif %}
+      {% if thanos_enabled | default(false) and thanos_ingress_enabled | default(true) %}
+      - Thanos Gateway: http://{{ thanos_ingress_host }}
+      {% endif %}
+      
+      To check the deployment:
+      kubectl get all -n {{ grafana_namespace }}
+      
+      To uninstall:
+      helm uninstall {{ release_name }} -n {{ grafana_namespace }}

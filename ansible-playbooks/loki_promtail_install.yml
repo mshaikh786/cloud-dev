@@ -1,0 +1,7 @@
+---
+- name: Install Promtail
+  hosts: server1
+  gather_facts: false
+  roles:
+    - loki
+    - promtail

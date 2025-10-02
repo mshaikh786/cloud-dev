@@ -1,0 +1,86 @@
+#!/bin/bash
+set -euxo pipefail
+
+
+echo "---- Starting user data script ----"
+
+# Redirect stdout and stderr to both console and file
+exec > >(tee /var/log/userdata.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+
+
+# Enable IPv4 and IPv6 forwarding
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+sysctl -p
+
+# Create directory for RKE2 binary
+mkdir -p /usr/local/bin
+chmod 755 /usr/local/bin
+
+
+
+echo "Joining the RKE2 cluster..."
+
+
+# Create necessary RKE2 directories
+mkdir -p /etc/rancher/rke2
+chmod 755 /etc/rancher/rke2
+
+mkdir -p /var/lib/rancher/rke2/server
+chmod 755 /var/lib/rancher/rke2/server
+
+
+
+mkdir -p /etc/rancher/rke2
+echo "{{ rke2_token }}" > /etc/rancher/rke2/token
+
+
+# Write RKE2 agent config file (replace values as needed)
+cat <<EOF > /etc/rancher/rke2/config.yaml
+server: "https://{{ hostvars[groups['servers'][0]].ansible_host }}:9345"
+token: "{{ rke2_token }}"
+EOF
+
+chmod 644 /etc/rancher/rke2/config.yaml
+
+
+export INSTALL_RKE2_TYPE="agent"
+export INSTALL_RKE2_VERSION="{{ karpenter.rke2_version }}"
+curl -sfL https://get.rke2.io | sh -
+
+
+
+
+cat <<EOF >/etc/systemd/system/rke2-agent.service
+[Unit]
+Description=RKE2 Agent
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/rke2 agent
+KillMode=process
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+
+systemctl daemon-reexec
+systemctl daemon-reload
+systemctl enable rke2-agent
+systemctl restart rke2-agent
+
+
+
+
+# Optional debugging: check status/logs
+systemctl status rke2-agent || true
+journalctl -u rke2-agent --no-pager -n 50 || true
+
+# Optional: check network connectivity to server (modify if needed)
+curl -k -s --connect-timeout 5 https://{{ hostvars[groups['servers'][0]].ansible_host }}:9345/ping || true
+apt update
+apt install nfs-common

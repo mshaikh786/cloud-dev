@@ -1,0 +1,22 @@
+---
+
+- name: retrieve metadata from agent instances
+  hosts: agents
+  run_once: true
+  become: true
+  gather_facts: true
+  roles:
+    - retrieve_ec2_metadata
+
+- name: retrieve token from master node
+  hosts: servers
+  become: true
+  gather_facts: false
+  roles:
+    - retrieve_token
+
+- name: Install and configure Karpenter on RKE2
+  hosts: servers
+  gather_facts: false
+  roles:
+    - install-karpenter

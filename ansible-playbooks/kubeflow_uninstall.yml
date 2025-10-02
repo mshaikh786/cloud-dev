@@ -1,0 +1,6 @@
+---
+- hosts: server1
+  become: true
+  roles:
+    - role: kube_flow
+      state: absent

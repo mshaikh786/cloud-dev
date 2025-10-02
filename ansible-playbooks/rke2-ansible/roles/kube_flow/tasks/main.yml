@@ -1,0 +1,19 @@
+---
+# tasks file for kube_flow
+- name: Ensure pip is installed
+  ansible.builtin.package:
+    name: python3-pip
+    state: present
+- name: install pre-requisites
+  ansible.builtin.pip:
+    name:
+      - pyyaml
+      - kubernetes
+
+- name: install kubeflow
+  include_tasks: install.yml
+  when: state | default('present') == 'present'
+
+- name: uninstall kubeflow
+  include_tasks: uninstall.yml
+  when: state | default('present') == 'absent'

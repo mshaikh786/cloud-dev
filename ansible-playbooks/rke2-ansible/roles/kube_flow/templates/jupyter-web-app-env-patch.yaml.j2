@@ -1,0 +1,17 @@
+- op: add
+  path: /spec/template/spec/containers/0/env
+  value:
+    - name: LDAP_SERVER
+      value: ldap://{{ ldap_ip }}:389
+    - name: LDAP_BIND_DN
+      value: "{{ binddn }}"
+    - name: LDAP_BIND_PASSWORD
+      value: "{{ bindpw }}"
+    - name: LDAP_BASE_DN
+      value: "{{ basedn }}"
+    - name: NFS_SERVER
+      value: "{{ nfs_server }}"
+    - name: ENV_VARS
+      value: "CONDA_PKGS_DIR=$HOME/user-cache/.conda/pkgs,PIP_CACHE_DIR=$HOME/user-cache/.cache/pip,TMPDIR=$HOME/user-cache/tmp,JUPYTER_DATA_DIR=$HOME/user-cache/.jupyter,JUPYTER_CONFIG_DIR=$HOME/user-cache/.jupyter/config,JUPYTER_RUNTIME_DIR=$HOME/user-cache/.jupyter/runtime,IPYTHONDIR=$HOME/user-cache/.ipython,MAMBA_ROOT_PREFIX=$HOME/user-cache/.mamba,PYTHONUSERBASE=$HOME/user-cache/.local,CONDA_ENVS_PATH=$HOME/user-cache/.conda/envs,XDG_CACHE_HOME=$HOME/user-cache/.cache,XDG_CONFIG_HOME=$HOME/user-cache/.config,XDG_DATA_HOME=$HOME/user-cache/.local/share,XDG_RUNTIME_DIR=$HOME/user-cache/.runtime,NPM_CONFIG_CACHE=$HOME/user-cache/.npm,NODE_PATH=$HOME/user-cache/.local/lib/node_modules,R_LIBS_USER=$HOME/user-cache/.local/lib/R,GOPATH=$HOME/user-cache/go,CARGO_HOME=$HOME/user-cache/.cargo,RUSTUP_HOME=$HOME/user-cache/.rustup,HF_HOME=$HOME/user-cache/.cache/huggingface,TRANSFORMERS_CACHE=$HOME/user-cache/.cache/transformers,TORCH_HOME=$HOME/user-cache/.cache/torch,KERAS_HOME=$HOME/user-cache/.keras,SKLEARN_CACHE_DIR=$HOME/user-cache/.cache/sklearn,CODE_SERVER_CONFIG=$HOME/user-cache/.config/code-server,EXTENSIONS_DIR=$HOME/user-cache/.vscode/extensions,CODE_DATADIR=$HOME/user-cache/.local/share/code-server"
+    - name: ENV_FILES
+      value: "CONDARC=$HOME/user-cache/.condarc"

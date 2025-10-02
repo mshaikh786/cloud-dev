@@ -1,0 +1,87 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grafana-folder-permissions
+spec:
+  template:
+    spec:
+      containers:
+      - name: permissions-setter
+        image: google/cloud-sdk:alpine
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Install jq
+          apk add --no-cache jq
+          
+          GRAFANA_URL=$(cat /etc/grafana-auth/grafana-url)
+          ADMIN_USER=$(cat /etc/grafana-auth/admin-user)
+          ADMIN_PASSWORD=$(cat /etc/grafana-auth/admin-password)
+          
+          # Folder configuration
+          FOLDER_TITLE="Admins Cluster Monitoring"
+          
+          echo "========================================="
+          echo "Grafana Folder Permissions Setter"
+          echo "Time: $(date)"
+          echo "Target Folder: $FOLDER_TITLE"
+          echo "========================================="
+          
+          # Get folder UID
+          echo "🔍 Getting folder UID for: $FOLDER_TITLE"
+          
+          FOLDER_SEARCH=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/folders")
+          FOLDER_UID=$(echo "$FOLDER_SEARCH" | jq -r --arg title "$FOLDER_TITLE" '.[] | select(.title == $title) | .uid')
+          
+          if [ -z "$FOLDER_UID" ] || [ "$FOLDER_UID" = "null" ]; then
+            echo "❌ Folder not found: $FOLDER_TITLE"
+            echo "Available folders:"
+            echo "$FOLDER_SEARCH" | jq -r '.[] | "  - \(.title) (UID: \(.uid))"'
+            exit 1
+          fi
+          
+          echo "✅ Found folder UID: $FOLDER_UID"
+          
+          # Set admin-only permissions (empty items array removes all role permissions)
+          echo "🔒 Setting admin-only permissions..."
+          
+          PERMISSIONS_PAYLOAD='{"items":[]}'
+          
+          echo "📝 Permissions payload: $PERMISSIONS_PAYLOAD"
+          
+          RESPONSE=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d "$PERMISSIONS_PAYLOAD" \
+            "$GRAFANA_URL/api/folders/$FOLDER_UID/permissions")
+          
+          echo "📤 API Response: $RESPONSE"
+          
+          # Check if there's an error message in response
+          ERROR_MESSAGE=$(echo "$RESPONSE" | jq -r '.message // empty')
+          if [ -n "$ERROR_MESSAGE" ]; then
+            echo "❌ Error setting permissions: $ERROR_MESSAGE"
+            exit 1
+          fi
+          
+          echo "✅ Successfully set admin-only permissions on folder: $FOLDER_TITLE"
+          echo "🔒 Access restricted to admins only"
+          echo "⏰ Completed at: $(date)"
+        volumeMounts:
+        - name: grafana-auth
+          mountPath: /etc/grafana-auth
+          readOnly: true
+      volumes:
+      - name: grafana-auth
+        secret:
+          secretName: kube-prometheus-stack-grafana
+          items:
+          - key: admin-user
+            path: admin-user
+          - key: admin-password
+            path: admin-password
+          - key: grafana-url
+            path: grafana-url
+      restartPolicy: OnFailure

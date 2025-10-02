@@ -1,0 +1,87 @@
+---
+# roles/disk_expansion/tasks/main.yml
+- name: Get current disk and partition information
+  shell: lsblk
+  register: disk_info_before
+  changed_when: false
+
+- name: Show current disk info
+  debug:
+    msg: "{{ disk_info_before.stdout_lines }}"
+
+- name: Try using gdisk to fix the partition table
+  shell: |
+    echo -e "w\nY\n" | gdisk {{ dev | default('/dev/xvda') }}
+  register: gdisk_output
+  changed_when: true
+  failed_when: false
+
+- name: Fix partition table using sgdisk
+  shell: sgdisk -e {{ dev | default('/dev/xvda') }}
+  register: sgdisk_output
+  changed_when: true
+  failed_when: false
+
+- name: Inform kernel of partition changes
+  command: partprobe {{ dev | default('/dev/xvda') }}
+  changed_when: true
+
+- name: Expand partition using parted
+  shell: |
+    parted {{ dev | default('/dev/xvda') }} resizepart {{ part_num | default('5') }} 100%
+  register: resize_output
+  failed_when: false
+  changed_when: true
+
+- name: Alternative resize with growpart
+  shell: |
+    growpart {{ dev | default('/dev/xvda') }} {{ part_num | default('5') }}
+  register: growpart_output
+  failed_when: false
+  changed_when: true
+  when: resize_output.rc != 0
+
+- name: Inform kernel of partition changes again
+  command: partprobe {{ dev | default('/dev/xvda') }}
+  changed_when: true
+
+- name: Resize physical volume
+  command: "pvresize {{ dev | default('/dev/xvda') }}{{ part_num | default('5') }}"
+  changed_when: true
+
+- name: Get volume group name
+  shell: pvs {{ dev | default('/dev/xvda') }}{{ part_num | default('5') }} --noheadings -o vg_name | tr -d ' '
+  register: vg_name_output
+  changed_when: false
+  failed_when: false
+
+- name: Set VG name
+  set_fact:
+    vg_name: "{{ vg_name_output.stdout if vg_name_output.stdout else vg | default('rocky') }}"
+
+- name: Extend logical volume
+  shell: "lvextend -l +100%FREE /dev/{{ vg_name }}/{{ lv | default('root') }}"
+  register: lvextend_result
+  failed_when: false
+  changed_when: lvextend_result.rc == 0
+
+- name: Grow XFS filesystem
+  shell: "xfs_growfs /dev/{{ vg_name }}/{{ lv | default('root') }}"
+  changed_when: true
+  
+- name: Get final disk size
+  shell: lsblk
+  register: final_disk_info
+  changed_when: false
+
+- name: Verify final disk space
+  command: df -h /
+  register: final_disk_space
+  changed_when: false
+
+- name: Show final result
+  debug:
+    msg: 
+      - "Final disk structure:"
+      - "{{ final_disk_info.stdout_lines }}"
+      - "Final root filesystem: {{ final_disk_space.stdout_lines }}"

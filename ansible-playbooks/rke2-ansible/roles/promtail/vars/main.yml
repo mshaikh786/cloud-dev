@@ -1,0 +1,5 @@
+---
+# Promtail deployment variables
+promtail_namespace: loki
+promtail_release_name: promtail
+loki_gateway_url: "http://loki-gateway.loki.svc.cluster.local:80/loki/api/v1/push"

@@ -1,0 +1,9 @@
+---
+# tasks file for helm
+- name: install helm
+  include_tasks: install.yml
+  when: state | default('present') == 'present'
+
+- name: uninstall helm
+  include_tasks: uninstall.yml
+  when: state | default('present') == 'absent'

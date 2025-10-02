@@ -1,0 +1,26 @@
+---
+- name: uninstall prometheus using helm charts
+  kubernetes.core.helm:
+    state: absent
+    name: "{{ item.name }}"
+    namespace: "{{ item.namespace }}"
+    kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+  loop:
+    - name: prometheus
+      namespace: monitoring
+- name: Delete prometheus-ingress
+  kubernetes.core.k8s:
+    state: absent
+    src: "/home/opc/{{ item }}"
+    validate_certs: no
+    kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+  loop:
+    - prometheus-ingress.yml
+
+- name: Delete monitoring namespace
+  kubernetes.core.k8s:
+    name: monitoring
+    api_version: v1
+    kind: Namespace
+    state: absent
+    kubeconfig: "/home/{{ ansible_user }}/.kube/config"

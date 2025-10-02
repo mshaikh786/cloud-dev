@@ -1,0 +1,12 @@
+---
+collections:
+  - name: ansible.utils
+  - name: ansible.posix
+  - name: kubernetes.core
+    version: 2.4.0
+  - name: ansible.netcommon
+    version: 4.1.0
+  - name: community.general
+    version: 6.4.0
+  - name: community.kubernetes
+    version: 2.0.1

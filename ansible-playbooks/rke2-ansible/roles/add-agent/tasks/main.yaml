@@ -1,0 +1,101 @@
+# Copy agent config to all agents - we need to change agent2 & 3 later with the token
+- name: Deploy RKE2 Agent Configuration
+  ansible.builtin.template:
+    src: templates/rke2-agent-config.j2
+    dest: /etc/rancher/rke2/config.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  vars:
+    token: "{{ hostvars[groups['servers'][0]].rke2_token | default('') }}"
+    # Use private IP for communication within the cluster
+    server_private_ip: "{{ hostvars[groups['servers'][0]]['ansible_default_ipv4']['address'] }}"
+  when: inventory_hostname in groups['agents']
+
+# Verify agent config
+- name: Verify agent configuration
+  ansible.builtin.command: cat /etc/rancher/rke2/config.yaml
+  register: agent_config
+  changed_when: false
+  when: inventory_hostname in groups['agents']
+
+- name: Debug agent configuration
+  debug:
+    var: agent_config.stdout_lines
+  when: inventory_hostname in groups['agents']
+
+# Check agents have restarted to pick up config
+- name: Ensure RKE2 agents are enabled and running
+  ansible.builtin.systemd:
+    name: rke2-agent
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  when: inventory_hostname in groups['agents']
+
+# Verify the agent service is running
+- name: Check RKE2 agent service status
+  ansible.builtin.command: systemctl status rke2-agent
+  register: agent_status
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname in groups['agents']
+
+- name: Debug agent service status
+  debug:
+    var: agent_status.stdout_lines
+  when: inventory_hostname in groups['agents']
+
+# Check agent logs
+- name: Check agent logs
+  ansible.builtin.command: journalctl -u rke2-agent --no-pager -n 50
+  register: agent_logs
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname in groups['agents']
+
+- name: Debug agent logs
+  debug:
+    var: agent_logs.stdout_lines
+  when: inventory_hostname in groups['agents']
+
+# Test network connectivity to the server using private IP
+- name: Test network connectivity to RKE2 server
+  ansible.builtin.command: curl -k -s --connect-timeout 5 https://{{ hostvars[groups['servers'][0]]['ansible_default_ipv4']['address'] }}:9345/ping
+  register: connection_test
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname in groups['agents']
+
+- name: Debug network connectivity
+  debug:
+    var: connection_test
+  when: inventory_hostname in groups['agents']
+
+# Wait for agent registration (execute on the server)
+- name: Wait for nodes to register with the cluster
+  ansible.builtin.shell: |
+    for i in $(seq 1 12); do
+      if kubectl get nodes | grep -q {{ hostvars[item]['ansible_hostname'] }}; then
+        echo "Node {{ hostvars[item]['ansible_hostname'] }} registered"
+        exit 0
+      fi
+      echo "Waiting for node {{ hostvars[item]['ansible_hostname'] }} to register (attempt $i/12)..."
+      sleep 10
+    done
+    echo "Node {{ hostvars[item]['ansible_hostname'] }} failed to register within timeout"
+    exit 1
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+    PATH: "{{ ansible_env.PATH }}:/var/lib/rancher/rke2/bin:/usr/local/bin"
+  delegate_to: "{{ groups['servers'][0] }}"
+  register: node_registration
+  changed_when: false
+  failed_when: false
+  with_items: "{{ groups['agents'] }}"
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Debug node registration status
+  debug:
+    var: node_registration
+  when: inventory_hostname == groups['servers'][0]

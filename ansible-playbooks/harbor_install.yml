@@ -1,0 +1,7 @@
+---
+- name: Install Harbor Registry
+  hosts: server1
+  gather_facts: false
+  
+  roles:
+    - harbor

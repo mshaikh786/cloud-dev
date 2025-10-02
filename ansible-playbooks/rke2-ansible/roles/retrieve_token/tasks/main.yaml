@@ -1,0 +1,10 @@
+---
+- name: Get RKE2 node join token
+  slurp:
+    src: /var/lib/rancher/rke2/server/node-token
+  register: raw_token_content
+  become: true
+
+- name: Set RKE2 token as global fact
+  set_fact:
+    rke2_token: "{{ raw_token_content.content | b64decode | trim }}"

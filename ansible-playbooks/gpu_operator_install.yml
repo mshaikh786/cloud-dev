@@ -1,0 +1,7 @@
+---
+# gpu_operator_install.yml
+- name: Install NVIDIA GPU Operator
+  hosts: servers[0]
+  become: true
+  roles:
+    - nvidia_gpu_operator

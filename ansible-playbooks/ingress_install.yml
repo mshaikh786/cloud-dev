@@ -1,0 +1,6 @@
+---
+- name: Install NGINX Ingress Controller
+  hosts: server1
+  gather_facts: false
+  roles:
+    - nginx-ingress

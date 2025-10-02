@@ -1,0 +1,109 @@
+# Copy server config with token to all servers except server 1 (this has token)
+- name: Deploy RKE2 server Configuration
+  ansible.builtin.template:
+    src: templates/rke2-server-config.j2
+    dest: /etc/rancher/rke2/config.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  when: inventory_hostname != groups['servers'][0]
+
+# Ensure kubectl is properly installed and in PATH
+- name: Create symbolic link for kubectl in /usr/bin
+  ansible.builtin.file:
+    src: /var/lib/rancher/rke2/bin/kubectl
+    dest: /usr/bin/kubectl
+    state: link
+    force: yes
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Install bash completion
+  apt:
+    name: bash-completion
+    state: present
+
+- name: Set up kubectl bash completion
+  shell: |
+    kubectl completion bash | tee /etc/bash_completion.d/kubectl > /dev/null
+    chmod a+r /etc/bash_completion.d/kubectl
+
+# Setup kubeconfig for root user
+- name: Create .kube directory for root
+  ansible.builtin.file:
+    path: "/root/.kube"
+    state: directory
+    mode: '0700'
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Copy kubeconfig to root's .kube directory
+  ansible.builtin.copy:
+    src: /etc/rancher/rke2/rke2.yaml
+    dest: "/root/.kube/config"
+    remote_src: yes
+    mode: '0600'
+  when: inventory_hostname == groups['servers'][0]
+
+# Setup kubeconfig for ansible user
+- name: Create .kube directory for ansible user
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    mode: '0700'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Copy kubeconfig to ansible user's .kube directory
+  ansible.builtin.copy:
+    src: /etc/rancher/rke2/rke2.yaml
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: yes
+    mode: '0600'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+  when: inventory_hostname == groups['servers'][0]
+
+# Test kubectl connectivity
+- name: Test kubectl connectivity
+  ansible.builtin.command:
+    cmd: "kubectl cluster-info"
+  register: kubectl_info
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Debug kubectl connection status
+  ansible.builtin.debug:
+    var: kubectl_info
+  when: inventory_hostname == groups['servers'][0]
+
+# Keep checking the cluster API until it's functioning (deployed)
+- name: Wait for cluster API to be ready (can take 5-10 mins depending on internet/hardware)
+  ansible.builtin.command:
+    cmd: "kubectl get nodes"
+  environment:
+    KUBECONFIG: "/etc/rancher/rke2/rke2.yaml"
+  register: kubectl_output
+  until: "'connection refused' not in kubectl_output.stderr"
+  retries: 120
+  delay: 10
+  changed_when: false
+  when: inventory_hostname == groups['servers'][0]
+
+# Check that additional servers are restarted
+- name: Ensure additional RKE2 servers are enabled and running
+  ansible.builtin.systemd:
+    name: rke2-server
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  when: inventory_hostname != groups['servers'][0]
+
+# enable additional servers
+- name: Ensure RKE2 server is enabled and running
+  ansible.builtin.systemd:
+    name: rke2-server
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  when: inventory_hostname != groups['servers'][0]

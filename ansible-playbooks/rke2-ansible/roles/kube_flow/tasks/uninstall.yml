@@ -1,0 +1,15 @@
+- name: Check if Kubeflow is installed or not
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: kubeflow
+    kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+  register: kubeflow
+  ignore_errors: yes
+
+- name: Delete Kubeflow using kustomize if installed
+  become: false
+  ansible.builtin.shell: |
+    cd /opt/kubeflow/manifests && /usr/local/bin/kustomize build example | kubectl delete --timeout=5m --wait=false -f -
+  register: kubeflow_delete_task
+  when: kubeflow.resources | length > 0
+  ignore_errors: yes

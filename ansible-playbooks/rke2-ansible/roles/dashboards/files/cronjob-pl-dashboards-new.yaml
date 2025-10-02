@@ -1,0 +1,387 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grafana-project-admin-dashboard-creator
+spec:
+  schedule: "*/1 * * * *"  # Run every 5 minutes
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: grafana-dashboard-creator  # Reuse the same service account
+          containers:
+          - name: project-admin-dashboard-creator
+            image: google/cloud-sdk:alpine
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: LDAP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: ldap-credentials
+                  key: username
+            - name: LDAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ldap-credentials
+                  key: password
+            - name: LDAP_SERVER
+              valueFrom:
+                secretKeyRef:
+                  name: ldap-credentials
+                  key: server
+            - name: LDAP_BASE_DN
+              valueFrom:
+                secretKeyRef:
+                  name: ldap-credentials
+                  key: base_dn
+            - name: LDAP_PROJECT_GROUP_ANNOTATION
+              valueFrom:
+                secretKeyRef:
+                  name: ldap-credentials
+                  key: ldap-project-group-annotation
+            - name: LDAP_PROJECT_ADMIN_GROUP_ANNOTATION
+              valueFrom:
+                secretKeyRef:
+                  name: ldap-credentials
+                  key: ldap-project-admin-group-annotation
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Install required packages
+              apk add --no-cache jq openldap-clients
+              
+              # Install kubectl if not present
+              if ! command -v kubectl &> /dev/null; then
+                echo "Installing kubectl..."
+                curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                chmod +x kubectl
+                mv kubectl /usr/local/bin/
+                echo "✅ kubectl installed successfully"
+              else
+                echo "✅ kubectl already available"
+              fi
+              
+              GRAFANA_URL=$(cat /etc/grafana-auth/grafana-url)
+              ADMIN_USER=$(cat /etc/grafana-auth/admin-user)
+              ADMIN_PASSWORD=$(cat /etc/grafana-auth/admin-password)
+              DASHBOARD_JSON=$(cat /etc/dashboard/dashboard.json)
+              
+              echo "========================================="
+              echo "Starting Project Admin Dashboard Creator"
+              echo "Job started at $(date)"
+              echo "========================================="
+              
+              # Function to query IPA for user groups
+              get_user_groups() {
+                local username="$1"
+                echo "Searching for groups containing user: $username"
+                
+                # IPA-specific group search - find groups where user is a member
+                local groups=$(ldapsearch -x -H "ldap://$LDAP_SERVER" \
+                  -D "$LDAP_USERNAME" \
+                  -w "$LDAP_PASSWORD" \
+                  -b "cn=groups,cn=accounts,$LDAP_BASE_DN" \
+                  "(&(objectClass=ipausergroup)(member=uid=$username,cn=users,cn=accounts,$LDAP_BASE_DN))" cn \
+                  2>/dev/null | grep "^cn:" | awk '{print $2}')
+                
+                # Also try alternative search for posixgroup
+                if [ -z "$groups" ]; then
+                  echo "Trying alternative posixgroup search..."
+                  groups=$(ldapsearch -x -H "ldap://$LDAP_SERVER" \
+                    -D "$LDAP_USERNAME" \
+                    -w "$LDAP_PASSWORD" \
+                    -b "cn=groups,cn=accounts,$LDAP_BASE_DN" \
+                    "(&(objectClass=posixgroup)(memberUid=$username))" cn \
+                    2>/dev/null | grep "^cn:" | awk '{print $2}')
+                fi
+                
+                # Debug: show raw LDAP search if no groups found
+                if [ -z "$groups" ]; then
+                  echo "Debug: Raw LDAP search for user $username:"
+                  ldapsearch -x -H "ldap://$LDAP_SERVER" \
+                    -D "$LDAP_USERNAME" \
+                    -w "$LDAP_PASSWORD" \
+                    -b "cn=groups,cn=accounts,$LDAP_BASE_DN" \
+                    "(member=uid=$username,cn=users,cn=accounts,$LDAP_BASE_DN)" cn \
+                    2>&1 | head -20
+                fi
+                
+                echo "$groups"
+              }
+              
+              # Function to get project members from IPA group
+              get_project_members() {
+                local project_group="$1"
+                echo "Getting members of IPA group: $project_group"
+                
+                # Get members from IPA group
+                local members=$(ldapsearch -x -H "ldap://$LDAP_SERVER" \
+                  -D "$LDAP_USERNAME" \
+                  -w "$LDAP_PASSWORD" \
+                  -b "cn=groups,cn=accounts,$LDAP_BASE_DN" \
+                  "(&(objectClass=ipausergroup)(cn=$project_group))" member \
+                  2>/dev/null | grep "^member:" | sed 's/^member: uid=//' | sed 's/,cn=users,cn=accounts,.*//')
+                
+                # Try alternative search if no members found
+                if [ -z "$members" ]; then
+                  echo "Trying alternative memberUid search..."
+                  members=$(ldapsearch -x -H "ldap://$LDAP_SERVER" \
+                    -D "$LDAP_USERNAME" \
+                    -w "$LDAP_PASSWORD" \
+                    -b "cn=groups,cn=accounts,$LDAP_BASE_DN" \
+                    "(&(objectClass=posixgroup)(cn=$project_group))" memberUid \
+                    2>/dev/null | grep "^memberUid:" | awk '{print $2}')
+                fi
+                
+                echo "$members"
+              }
+              
+              # Function to get user email from IPA
+              get_user_email() {
+                local username="$1"
+                local email=$(ldapsearch -x -H "ldap://$LDAP_SERVER" \
+                  -D "$LDAP_USERNAME" \
+                  -w "$LDAP_PASSWORD" \
+                  -b "cn=users,cn=accounts,$LDAP_BASE_DN" \
+                  "(&(objectClass=person)(uid=$username))" mail \
+                  2>/dev/null | grep "^mail:" | awk '{print $2}')
+                
+                # If no email found, try alternative attributes or construct from username
+                if [ -z "$email" ]; then
+                  echo "No email found for $username, using username as fallback"
+                  echo "$username"
+                else
+                  echo "$email"
+                fi
+              }
+              
+              # Get all users from Grafana API
+              USER_LIST=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/users")
+              
+              if [ $? -ne 0 ] || [ -z "$USER_LIST" ]; then
+                echo "Error: Failed to fetch users from Grafana API"
+                exit 1
+              fi
+              
+              # Loop through each user to check for admin roles
+              for user_json in $(echo "$USER_LIST" | jq -r '.[] | @base64'); do
+                # Decode user data
+                user_data=$(echo "$user_json" | base64 -d)
+                user_login=$(echo "$user_data" | jq -r '.login')
+                user_email=$(echo "$user_data" | jq -r '.email // .login')
+                
+                echo ""
+                echo "========================================="
+                echo "Checking user: $user_login (email: $user_email)"
+                echo "========================================="
+                
+                # Get user's LDAP groups
+                echo "Querying IPA groups for: $user_login"
+                echo "Using search base: cn=groups,cn=accounts,$LDAP_BASE_DN"
+                echo "Looking for member: uid=$user_login,cn=users,cn=accounts,$LDAP_BASE_DN"
+                
+                USER_GROUPS=$(get_user_groups "$user_login")
+                
+                if [ -z "$USER_GROUPS" ]; then
+                  echo "❌ No IPA groups found for user: $user_login"
+                  echo "Checking if user exists in IPA..."
+                  
+                  # Debug: Check if user exists
+                  USER_EXISTS=$(ldapsearch -x -H "ldap://$LDAP_SERVER" \
+                    -D "$LDAP_USERNAME" \
+                    -w "$LDAP_PASSWORD" \
+                    -b "cn=users,cn=accounts,$LDAP_BASE_DN" \
+                    "(uid=$user_login)" uid 2>/dev/null | grep "^uid:")
+                  
+                  if [ -n "$USER_EXISTS" ]; then
+                    echo "✅ User exists in IPA: $USER_EXISTS"
+                    echo "❌ But no group memberships found"
+                  else
+                    echo "❌ User $user_login not found in IPA"
+                  fi
+                  continue
+                fi
+                
+                echo "User groups found:"
+                echo "$USER_GROUPS" | while read -r group; do
+                  [ -n "$group" ] && echo "  - $group"
+                done
+                
+                # Check if user is admin of any project
+                ADMIN_PROJECTS=""
+                for group in $USER_GROUPS; do
+                  if echo "$group" | grep -q "^${LDAP_PROJECT_ADMIN_GROUP_ANNOTATION}"; then
+                    PROJECT_NAME=$(echo "$group" | sed "s/^${LDAP_PROJECT_ADMIN_GROUP_ANNOTATION}//")
+                    if [ -n "$PROJECT_NAME" ]; then
+                      if [ -z "$ADMIN_PROJECTS" ]; then
+                        ADMIN_PROJECTS="$PROJECT_NAME"
+                      else
+                        ADMIN_PROJECTS="$ADMIN_PROJECTS $PROJECT_NAME"
+                      fi
+                    fi
+                  fi
+                done
+                
+                if [ -z "$ADMIN_PROJECTS" ]; then
+                  echo "User $user_login is not an admin of any projects. Skipping."
+                  continue
+                fi
+                
+                echo "🎯 User $user_login is admin of projects: $ADMIN_PROJECTS"
+                
+                # Process each project this user administers
+                for project in $ADMIN_PROJECTS; do
+                  echo ""
+                  echo "--- Processing Project: $project ---"
+                  
+                  PROJECT_GROUP="${LDAP_PROJECT_GROUP_ANNOTATION}${project}"
+                  echo "Getting members of project group: $PROJECT_GROUP"
+                  
+                  # Get all project members
+                  PROJECT_MEMBERS=$(get_project_members "$PROJECT_GROUP")
+                  
+                  if [ -z "$PROJECT_MEMBERS" ]; then
+                    echo "No members found in project group: $PROJECT_GROUP"
+                    continue
+                  fi
+                  
+                  echo "Project members found:"
+                  PROJECT_MEMBER_EMAILS=""
+                  for member in $PROJECT_MEMBERS; do
+                    if [ -n "$member" ]; then
+                      member_email=$(get_user_email "$member")
+                      echo "  - $member (email: $member_email)"
+                      if [ -z "$PROJECT_MEMBER_EMAILS" ]; then
+                        PROJECT_MEMBER_EMAILS="$member_email"
+                      else
+                        PROJECT_MEMBER_EMAILS="$PROJECT_MEMBER_EMAILS $member_email"
+                      fi
+                    fi
+                  done
+                  
+                  # Find namespaces owned by project members
+                  echo "Searching for namespaces owned by project members..."
+                  ALL_PROJECT_NAMESPACES=""
+                  
+                  for email in $PROJECT_MEMBER_EMAILS; do
+                    if [ -n "$email" ]; then
+                      MEMBER_NAMESPACES=$(kubectl get namespaces -o json | jq -r --arg email "$email" '
+                        .items[] | 
+                        select(.metadata.annotations.owner == $email) | 
+                        .metadata.name
+                      ')
+                      
+                      if [ -n "$MEMBER_NAMESPACES" ]; then
+                        echo "  Member $email owns:"
+                        for ns in $MEMBER_NAMESPACES; do
+                          echo "    - $ns"
+                          if [ -z "$ALL_PROJECT_NAMESPACES" ]; then
+                            ALL_PROJECT_NAMESPACES="$ns"
+                          else
+                            ALL_PROJECT_NAMESPACES="$ALL_PROJECT_NAMESPACES,$ns"
+                          fi
+                        done
+                      fi
+                    fi
+                  done
+                  
+                  if [ -z "$ALL_PROJECT_NAMESPACES" ]; then
+                    echo "No namespaces found for project $project members"
+                    continue
+                  fi
+                  
+                  echo "📊 Total project namespaces: $(echo "$ALL_PROJECT_NAMESPACES" | tr ',' '\n' | wc -l)"
+                  echo "Namespace list: $ALL_PROJECT_NAMESPACES"
+                  
+                  # Create admin dashboard for this project
+                  SANITIZED_USER=$(echo "$user_login" | sed 's/\./_/g')
+                  SANITIZED_PROJECT=$(echo "$project" | sed 's/\./_/g' | sed 's/-/_/g')
+                  DASHBOARD_UID="k8s_admin_${SANITIZED_USER}_${SANITIZED_PROJECT}"
+                  
+                  # Check if the dashboard already exists
+                  # EXISTS=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/dashboards/uid/$DASHBOARD_UID")
+                  # if [ "$(echo "$EXISTS" | jq -r '.dashboard.id // empty')" != "" ]; then
+                  #   echo "Admin dashboard for $user_login - $project already exists. Skipping creation."
+                  #   continue
+                  # fi
+                  
+                  # Modify the dashboard JSON for admin view
+                  DASHBOARD_TITLE="$user_login - $project Team Dashboard (Admin)"
+                  MODIFIED_JSON=$(echo "$DASHBOARD_JSON" | jq --arg title "$DASHBOARD_TITLE" --arg uid "$DASHBOARD_UID" --arg nslist "$ALL_PROJECT_NAMESPACES" --arg project "$project" '
+                    del(.id) |
+                    .title = $title |
+                    .uid = $uid |
+                    (.templating.list[] | select(.name == "namespace").current.text) = ($nslist | split(",")) |
+                    (.templating.list[] | select(.name == "namespace").current.value) = ($nslist | split(",")) |
+                    (.templating.list[] | select(.name == "namespace").regex) = "^(" + ($nslist | split(",") | join("|")) + ")$"
+                  ')
+                  
+                  # Create the admin dashboard
+                  echo "🚀 Creating admin dashboard for $user_login - Project: $project"
+                  CREATE_RESPONSE=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+                    -X POST \
+                    -H "Content-Type: application/json" \
+                    -d "{\"dashboard\": $MODIFIED_JSON, \"folderId\": 0, \"overwrite\": true}" \
+                    "$GRAFANA_URL/api/dashboards/db")
+                  
+                  # Verify creation success
+                  if [ "$(echo "$CREATE_RESPONSE" | jq -r '.status')" == "success" ]; then
+                    DASHBOARD_ID=$(echo "$CREATE_RESPONSE" | jq -r '.id')
+                    echo "✅ Successfully created admin dashboard for $user_login - $project (ID: $DASHBOARD_ID, UID: $DASHBOARD_UID)"
+                  else
+                    echo "❌ Error creating admin dashboard for $user_login - $project: $(echo "$CREATE_RESPONSE" | jq -r '.message')"
+                    continue
+                  fi
+                  
+                  # Set permissions for the admin user
+                  USER_ID=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/users/lookup?loginOrEmail=$user_login" | jq -r '.id')
+                  if [ -z "$USER_ID" ] || [ "$USER_ID" == "null" ]; then
+                    echo "Error: Could not find user ID for $user_login"
+                    continue
+                  fi
+                  
+                  PERM_RESPONSE=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+                    -X POST \
+                    -H "Content-Type: application/json" \
+                    -d "{\"items\": [{\"userId\": $USER_ID, \"permission\": 2}]}" \
+                    "$GRAFANA_URL/api/dashboards/id/$DASHBOARD_ID/permissions")
+                  
+                  if [ "$(echo "$PERM_RESPONSE" | jq -r '.status')" == "success" ]; then
+                    echo "✅ Successfully set admin permissions for $user_login's project dashboard"
+                  else
+                    echo "❌ Error setting permissions for $user_login - $project: $(echo "$PERM_RESPONSE" | jq -r '.message')"
+                  fi
+                  
+                  echo "Completed admin dashboard for $user_login - Project: $project"
+                done
+                
+                echo "Completed processing for admin user: $user_login"
+              done
+
+              echo ""
+              echo "========================================="
+              echo "Project Admin Dashboard Creator completed at $(date)"
+              echo "========================================="
+            volumeMounts:
+            - name: grafana-auth
+              mountPath: /etc/grafana-auth
+              readOnly: true
+            - name: dashboard-config
+              mountPath: /etc/dashboard
+          volumes:
+          - name: grafana-auth
+            secret:
+              secretName: kube-prometheus-stack-grafana
+              items:
+              - key: admin-user
+                path: admin-user
+              - key: admin-password
+                path: admin-password
+              - key: grafana-url
+                path: grafana-url
+          - name: dashboard-config
+            configMap:
+              name: user-dashboard  # Reusing existing ConfigMap
+          restartPolicy: OnFailure

@@ -1,0 +1,184 @@
+---
+- name: Download the tarball
+  ansible.builtin.get_url:
+    url: "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.3.0/kustomize_v5.3.0_linux_amd64.tar.gz"
+    dest: "/opt/kustomize.tar.gz"
+
+- name: Extract the tarball
+  ansible.builtin.unarchive:
+    remote_src: true
+    src: "/opt/kustomize.tar.gz"
+    dest: "/opt"
+- name: move kustomize command to /usr/local/bin
+  ansible.builtin.copy:
+    remote_src: true
+    src: /opt/kustomize
+    dest: /usr/local/bin/kustomize
+    mode: '0755'
+
+- name: create kubeflow directory
+  ansible.builtin.file:
+    path: /opt/kubeflow
+    state: directory
+
+- name: clone manifests using git
+  block:
+    - name: install git
+      ansible.builtin.package:
+        name: git
+        state: present
+
+    - name: download Kubeflow manifests
+      ansible.builtin.git:
+        repo: https://github.com/kubeflow/manifests.git
+        dest: /opt/kubeflow/manifests
+        update: false
+        version: "{{ kubeflow_version }}"
+        # force: true
+    - name: Find files matching the pattern
+      find:
+        paths: /opt/kubeflow/manifests
+        patterns: "*.env"
+        recurse: yes
+      register: found_files
+    - name: Update APP_SECURE_COOKIES to false in found files
+      replace:
+        path: "{{ item.path }}"
+        regexp: '^(\S*_APP_SECURE_COOKIES=)(false|true)$'
+        replace: '\1false'
+        backup: yes
+      with_items: "{{ found_files.files }}"
+
+
+- name: add a ldap connection to dex
+  ansible.builtin.blockinfile:
+    path: /opt/kubeflow/manifests/common/dex/base/config-map.yaml
+    insertafter: "secretEnv"
+    backup: true
+    state: present
+    marker: "    # {mark} ANSIBLE MANAGED BLOCK for ldap connection "
+    block: |2
+          connectors:
+          - type: ldap
+            id: ldap
+            name: LDAP
+            config:
+              host: {{ ldap_ip }}:389  #Address of AD Server
+              insecureNoSSL: true
+              insecureSkipVerify: true
+              bindDN: {{ binddn }}
+              bindPW: {{ bindpw }}
+
+              usernamePrompt: Username
+            
+              userSearch:
+                baseDN: {{ basedn }}
+                filter: "(objectClass=person)"
+                username: uid
+                idAttr: uid
+                emailAttr: krbPrincipalName
+                nameAttr: cn
+  register: ldap
+  when: ldap_add_conf | bool
+
+
+- name: Jupyter configmap
+  ansible.builtin.copy:
+    src: spawner_ui_config.yaml
+    dest: /opt/kubeflow/manifests/apps/jupyter/jupyter-web-app/upstream/base/configs/spawner_ui_config.yaml
+  register: jupyter_cm
+
+- name: add auto-registration upon first login by new user
+  ansible.builtin.replace:
+    path: /opt/kubeflow/manifests/apps/centraldashboard/upstream/base/params.env
+    regexp: "CD_REGISTRATION_FLOW=false"
+    replace: "CD_REGISTRATION_FLOW=true"
+
+- name: turn off installing cert manger
+  ansible.builtin.lineinfile:
+    regex: ^- ../common/cert-manager/cert-manager/base
+    line: '#- ../common/cert-manager/cert-manager/base'
+    path: /opt/kubeflow/manifests/example/kustomization.yaml
+    backup: true
+  when: not install_cert_manager | bool
+
+- name: turn on installing cert manger
+  ansible.builtin.lineinfile:
+    regex: ^#- ../common/cert-manager/cert-manager/base
+    line: '- ../common/cert-manager/cert-manager/base'
+    path: /opt/kubeflow/manifests/example/kustomization.yaml
+    backup: true
+  when: install_cert_manager | bool
+
+- name: Check if Kubeflow is installed or not
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: kubeflow
+    kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+  register: kubeflow
+  ignore_errors: yes
+
+- name: Install Kubeflow using kustomize if not already installed
+  block:
+    - name: Build and apply Kubeflow manifests
+      become: false
+      ansible.builtin.shell: |
+        cd /opt/kubeflow/manifests && /usr/local/bin/kustomize build example | kubectl apply -f -
+      register: kubeflow_task
+      until: kubeflow_task.rc == 0
+      retries: 10
+      delay: 10
+      ignore_errors: yes
+
+    - name: Show installation output
+      debug:
+        msg: "Kubeflow installation output: {{ kubeflow_task.stdout_lines }}"
+
+    - name: Pause for 5 minutes to allow resources to settle
+      ansible.builtin.pause:
+        minutes: 5
+
+    - name: Ensure all resources are applied
+  block:
+    - name: Build and apply Kubeflow manifests
+      become: false
+      ansible.builtin.shell: |
+        cd /opt/kubeflow/manifests && /usr/local/bin/kustomize build example | kubectl apply -f -
+      register: kubeflow_task
+      until: kubeflow_task.rc == 0
+      retries: 10
+      delay: 10
+      ignore_errors: yes
+
+
+    # Add a task to wait for dex deployment to be ready
+    - name: Wait for Dex pod to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=ready pod -l app=dex -n auth --timeout=300s
+      register: dex_ready
+      ignore_errors: yes
+
+    # Apply LDAP config directly
+    - name: Apply LDAP configuration to Dex configmap
+      become: false
+      ansible.builtin.shell: |
+        kubectl get configmap dex -n auth -o yaml > /tmp/dex-orig.yaml &&
+        cat /opt/kubeflow/manifests/common/dex/base/config-map.yaml | 
+        kubectl patch configmap dex -n auth --patch "$(cat /opt/kubeflow/manifests/common/dex/base/config-map.yaml)"
+      register: ldap_task
+      ignore_errors: yes
+      
+    # Restart Dex pod to pick up new config
+    - name: Restart Dex pod to apply new config
+      become: false
+      ansible.builtin.shell: |
+        kubectl rollout restart deployment dex -n auth
+      ignore_errors: yes
+
+    # Change istio-ingressgateway to NodePort with specific ports
+    - name: Change istio-ingressgateway to NodePort with specific ports
+      become: false
+      ansible.builtin.shell: |
+        kubectl patch svc istio-ingressgateway -n istio-system --type=merge -p '{"spec":{"type":"NodePort","ports":[{"name":"status-port","port":15021,"nodePort":32001,"protocol":"TCP","targetPort":15021},{"name":"http2","port":80,"nodePort":32000,"protocol":"TCP","targetPort":8080},{"name":"https","port":443,"nodePort":32002,"protocol":"TCP","targetPort":8443}]}}'
+      register: istio_gateway_patch
+      ignore_errors: yes

@@ -1,0 +1,17 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: nfs
+  namespace: nfs
+spec:
+  chart: nfs-subdir-external-provisioner
+  repo: https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner
+  targetNamespace: nfs
+  valuesContent: |-
+    nfs:
+      server: "{{ lookup('ansible.builtin.env', 'EFS_STORAGE_CLASS') | default('10.0.0.75', true) }}"
+      path: /
+    storageClass:
+      name: "nfs-storage"
+      annotations:
+        storageclass.kubernetes.io/is-default-class: "true"

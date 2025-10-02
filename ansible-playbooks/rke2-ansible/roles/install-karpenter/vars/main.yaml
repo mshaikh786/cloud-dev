@@ -1,0 +1,12 @@
+---
+karpenter:
+  namespace: karpenter
+  helm_repo: "oci://public.ecr.aws/karpenter/karpenter"
+  availability_zone: "eu-central-1a"
+  cluster_name: "test-cluster"
+  rke2_version: "v1.29.4+rke2r1"
+  karpenter_nodeclass_name: "default"
+  cpu_limit: 1000
+  ttl_hours: "720h"
+  consolidate_after: "10m"
+  managed_by: "karpenter"

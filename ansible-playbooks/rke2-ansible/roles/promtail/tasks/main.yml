@@ -1,0 +1,254 @@
+---
+- name: Create namespace for Promtail
+  ansible.builtin.shell: |
+    kubectl create namespace {{ promtail_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+  register: namespace_result
+  changed_when: "'created' in namespace_result.stdout or 'configured' in namespace_result.stdout"
+
+- name: Add Grafana Helm repository
+  ansible.builtin.shell: helm repo add grafana https://grafana.github.io/helm-charts
+  register: helm_repo_result
+  changed_when: "'has been added' in helm_repo_result.stdout"
+  failed_when: 
+    - helm_repo_result.rc != 0
+    - "'already exists' not in helm_repo_result.stderr"
+
+- name: Update Helm repositories
+  ansible.builtin.shell: helm repo update
+  register: helm_update_result
+  changed_when: "'Update Complete' in helm_update_result.stdout"
+
+- name: Create Promtail values file
+  ansible.builtin.shell: |
+    cat > /tmp/promtail-values.yaml << 'EOF'
+    # Promtail configuration for Ansible deployment
+    daemonset:
+      enabled: true
+      autoscaling:
+        enabled: false
+
+    deployment:
+      enabled: false
+
+    service:
+      enabled: false
+
+    configmap:
+      enabled: false
+
+    image:
+      registry: docker.io
+      repository: grafana/promtail
+      tag: ""
+      pullPolicy: IfNotPresent
+
+    imagePullSecrets: []
+
+    hostAliases: []
+
+    hostNetwork: null
+
+    annotations: {}
+
+    updateStrategy: {}
+
+    podLabels: {}
+
+    podAnnotations: {}
+
+    priorityClassName: null
+
+    livenessProbe: {}
+
+    readinessProbe:
+      failureThreshold: 5
+      httpGet:
+        path: /ready
+        port: http-metrics
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      successThreshold: 1
+      timeoutSeconds: 1
+
+    resources:
+      limits:
+        cpu: 200m
+        memory: 128Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+    podSecurityContext:
+      runAsUser: 0
+      runAsGroup: 0
+
+    containerSecurityContext:
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+        add:
+          - DAC_OVERRIDE 
+      allowPrivilegeEscalation: false
+      seccompProfile:
+        type: RuntimeDefault
+
+    rbac:
+      create: true
+      pspEnabled: false
+
+    namespace: null
+
+    serviceAccount:
+      create: true
+      name: null
+      imagePullSecrets: []
+      annotations: {}
+      automountServiceAccountToken: true
+
+    automountServiceAccountToken: true
+
+    nodeSelector: {}
+
+    affinity: {}
+
+    tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+
+    defaultVolumes:
+      - name: run
+        hostPath:
+          path: /run/promtail
+      - name: containers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: pods
+        hostPath:
+          path: /var/log/pods
+
+    defaultVolumeMounts:
+      - name: run
+        mountPath: /run/promtail
+      - name: containers
+        mountPath: /var/lib/docker/containers
+        readOnly: true
+      - name: pods
+        mountPath: /var/log/pods
+        readOnly: true
+
+    extraVolumes: []
+
+    extraVolumeMounts: []
+
+    extraArgs: []
+
+    extraEnv: []
+
+    extraEnvFrom: []
+
+    enableServiceLinks: true
+
+    serviceMonitor:
+      enabled: false
+
+    extraContainers: {}
+
+    extraPorts: {}
+
+    podSecurityPolicy:
+      privileged: true
+      allowPrivilegeEscalation: true
+      volumes:
+        - 'secret'
+        - 'hostPath'
+        - 'downwardAPI'
+      hostNetwork: false
+      hostIPC: false
+      hostPID: false
+      runAsUser:
+        rule: 'RunAsAny'
+      seLinux:
+        rule: 'RunAsAny'
+      supplementalGroups:
+        rule: 'RunAsAny'
+      fsGroup:
+        rule: 'RunAsAny'
+      readOnlyRootFilesystem: true
+      requiredDropCapabilities:
+        - ALL
+
+    config:
+      enabled: true
+      logLevel: info
+      logFormat: logfmt
+      serverPort: 3101
+      clients:
+        - url: {{ loki_gateway_url }}
+          tenant_id: fake
+      positions:
+        filename: /run/promtail/positions.yaml
+      enableTracing: false
+
+    networkPolicy:
+      enabled: false
+
+    httpPathPrefix: ""
+
+    sidecar:
+      configReloader:
+        enabled: false
+
+    extraObjects: []
+    EOF
+  register: values_file_result
+  changed_when: true
+
+- name: Check if Promtail release already exists
+  ansible.builtin.shell: helm list -n {{ promtail_namespace }} | grep {{ promtail_release_name }}
+  register: helm_list_result
+  failed_when: false
+  changed_when: false
+
+- name: Install Promtail using Helm
+  ansible.builtin.shell: |
+    helm install {{ promtail_release_name }} grafana/promtail \
+      --namespace {{ promtail_namespace }} \
+      --values /tmp/promtail-values.yaml
+  register: helm_install_result
+  when: helm_list_result.rc != 0
+  changed_when: "'STATUS: deployed' in helm_install_result.stdout"
+
+- name: Upgrade Promtail if already installed
+  ansible.builtin.shell: |
+    helm upgrade {{ promtail_release_name }} grafana/promtail \
+      --namespace {{ promtail_namespace }} \
+      --values /tmp/promtail-values.yaml
+  register: helm_upgrade_result
+  when: helm_list_result.rc == 0
+  changed_when: "'STATUS: deployed' in helm_upgrade_result.stdout"
+
+- name: Wait for Promtail DaemonSet to be ready
+  ansible.builtin.shell: |
+    kubectl rollout status daemonset/{{ promtail_release_name }} -n {{ promtail_namespace }} --timeout=300s
+  register: rollout_result
+  changed_when: false
+
+- name: Verify Promtail pods are running
+  ansible.builtin.shell: kubectl get pods -n {{ promtail_namespace }} -l app.kubernetes.io/name=promtail
+  register: pods_status
+  changed_when: false
+
+- name: Display Promtail status
+  ansible.builtin.debug:
+    msg: "{{ pods_status.stdout_lines }}"
+
+- name: Clean up temporary values file
+  ansible.builtin.file:
+    path: /tmp/promtail-values.yaml
+    state: absent
+  changed_when: false

@@ -1,0 +1,96 @@
+---
+# tasks file for prometheus-stack
+- name: Add Prometheus chart repo
+  kubernetes.core.helm_repository:
+    name: "{{ item.name }}"
+    repo_url: "{{ item.url }}"
+  loop:
+    - name: prometheus-community
+      url: https://prometheus-community.github.io/helm-charts
+    - name: opencost
+      url: https://opencost.github.io/opencost-helm-chart
+
+- name: Install Prometheus using Helm charts
+  kubernetes.core.helm:
+    chart_ref: prometheus-community/kube-prometheus-stack
+    update_repo_cache: yes
+    wait: true
+    state: present
+    name: prometheus
+    create_namespace: yes
+    kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+    namespace: monitoring
+    values:
+      prometheus:
+        service:
+          type: NodePort
+          nodePort: 30001
+        prometheusSpec:
+          scrapeInterval: 15s
+          evaluationInterval: 15s
+      # Configure Grafana with NodePort
+      grafana:
+        enabled: true
+        service:
+          type: NodePort
+          nodePort: 30000
+        adminPassword: "admin"
+        dashboardProviders:
+          dashboardproviders.yaml:
+            apiVersion: 1
+            providers:
+              - name: 'default'
+                orgId: 1
+                folder: ''
+                type: file
+                disableDeletion: false
+                editable: true
+                options:
+                  path: /var/lib/grafana/dashboards/default
+        dashboards:
+          default:
+            k8s-dashboard-22208:
+              gnetId: 22208
+              revision: 1
+              datasource: Prometheus
+            k8s-dashboard-22252:
+              gnetId: 22252
+              revision: 1
+              datasource: Prometheus
+
+- name: Install OpenCost using Helm charts
+  kubernetes.core.helm:
+    chart_ref: opencost/opencost
+    update_repo_cache: yes
+    wait: true
+    state: present
+    name: opencost
+    create_namespace: yes
+    kubeconfig: "/home/{{ ansible_user }}/.kube/config"
+    namespace: opencost
+    values:
+      opencost:
+        prometheus:
+          internal:
+            enabled: true
+            serviceName: prometheus-stack-kube-prom-prometheus
+            namespaceName: monitoring
+            port: 9090
+        metrics:
+          serviceMonitor:
+            enabled: true
+            additionalLabels:
+              release: prometheus
+        customPricing:
+          enabled: true
+          costModel:
+            description: "On-prem custom pricing"
+            CPU: "5"
+            spotCPU: "0.006655"
+            RAM: "2"
+            spotRAM: "0.000892"
+            GPU: "0.95"
+            storage: "5"
+            zoneNetworkEgress: "0.01"
+            regionNetworkEgress: "0.01"
+            internetNetworkEgress: "0.12"

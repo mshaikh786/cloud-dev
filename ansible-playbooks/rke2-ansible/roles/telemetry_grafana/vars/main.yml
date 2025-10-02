@@ -1,0 +1,136 @@
+---
+# Helm and deployment configuration
+release_name: "prometheus-grafana"
+grafana_namespace: "monitoring"
+helm_timeout: "10m"
+deployment_timeout: "300s"
+cleanup_temp_files: true
+
+
+# Default variables for kube-prometheus-stack role
+# Global Ingress Configuration
+ingress_class_name: "nginx"
+
+# Alertmanager Configuration
+alertmanager_enabled: true
+alertmanager_ingress_enabled: true
+alertmanager_ingress_host: "alertmanager.kaust.local"
+alertmanager_retention: "120h"
+
+# Grafana Configuration
+grafana_enabled: true
+grafana_ingress_enabled: true
+grafana_ingress_host: "grafana.kaust.local"
+grafana_admin_user: "admin"
+grafana_admin_password: "kaust-operator"
+grafana_timezone: "Asia/Karachi"
+grafana_default_dashboards_enabled: false
+grafana_dashboards_editable: true
+grafana_dashboards_interval: "1m"
+
+# Grafana Persistence
+grafana_persistence_enabled: true
+grafana_storage_class: "nfs-storage"
+grafana_storage_size: "20Gi"
+
+
+# Prometheus Configuration
+prometheus_enabled: true
+prometheus_ingress_enabled: true
+prometheus_ingress_host: "prometheus.kaust.local"
+gpu_operator_namespace: "gpu-operator"
+
+
+# Prometheus Performance Settings
+prometheus_replicas: 1
+prometheus_shards: 1
+prometheus_log_level: "info"
+prometheus_log_format: "logfmt"
+
+# Prometheus Retention Settings
+prometheus_retention: "7d"
+prometheus_retention_size: "25GB"
+
+# Prometheus Scraping Settings
+prometheus_scrape_interval: ""  # Uses Prometheus default (15s)
+prometheus_scrape_timeout: ""   # Uses Prometheus default (10s)
+prometheus_evaluation_interval: ""  # Uses Prometheus default (1m)
+
+# Prometheus Resource Settings
+prometheus_memory_request: "4Gi"
+prometheus_cpu_request: "2000m"
+prometheus_memory_limit: "8Gi"
+prometheus_cpu_limit: "4000m"
+
+# Prometheus Storage Settings
+prometheus_storage_class: "nfs-storage"
+prometheus_storage_size: "50Gi"
+prometheus_access_mode: "ReadWriteMany"
+
+# Prometheus Advanced Settings
+prometheus_disable_compaction: true
+
+# Thanos Configuration
+thanos_enabled: true
+thanos_ingress_enabled: true
+thanos_ingress_host: "thanos-gateway.kaust.local"
+thanos_object_storage_secret: "thanos-object-storage"
+
+# Thanos Object Storage Configuration
+thanos_object_storage_bucket: "prometheus-snapshots-rke2"
+thanos_object_storage_region: "us-east-1"
+thanos_object_storage_endpoint: "s3.us-east-1.amazonaws.com"
+
+# Loki Configuration
+loki_gateway_url: "http://loki-query-frontend.loki.svc.cluster.local:3100"
+
+# Grafana LDAP Configuration
+grafana_ldap_enabled: true
+
+# LDAP Configuration Variables
+# LDAP Server Configuration
+ldap_host: "63.176.217.151"
+ldap_port: 389
+ldap_use_ssl: false
+ldap_start_tls: false
+ldap_ssl_skip_verify: true
+ldap_verbose_logging: true
+
+# LDAP Authentication
+ldap_bind_dn: "uid=admin,cn=users,cn=accounts,dc=kaust,dc=local"
+ldap_password: "admin2026"
+
+# LDAP Search Configuration
+# IMPORTANT: This must be in quotes with proper escaping
+ldap_search_base_dns: '"cn=users,cn=accounts,dc=kaust,dc=local"'
+
+
+ldap_group_base_dn: "cn=groups,cn=accounts,dc=kaust,dc=local"
+
+ldap_search_filter_admin_and_viewer: "(&(objectClass=person)(uid=%s)(|(memberOf=cn=grafana-admins,cn=groups,cn=accounts,dc=kaust,dc=local)(memberOf=cn=grafana-members,cn=groups,cn=accounts,dc=kaust,dc=local)(memberOf=*cn=grafana-project-*,cn=groups,cn=accounts,dc=kaust,dc=local)))"
+
+ldap_search_filter_editor: "(&(objectClass=person)(uid=%s)(|(memberOf=cn=grafana-admins,cn=groups,cn=accounts,dc=kaust,dc=local)(memberOf=*cn=grafana-admins-project-*,cn=groups,cn=accounts,dc=kaust,dc=local)))"
+
+# LDAP Attribute Mapping
+ldap_attr_name: "givenName"
+ldap_attr_surname: "sn"
+ldap_attr_username: "uid"
+ldap_attr_member_of: "memberOf"
+ldap_attr_email: "mail"
+
+# Organization ID
+ldap_org_id: 1
+
+# Group Mappings
+ldap_admin_group: "cn=grafana-admins,cn=groups,cn=accounts,dc=kaust,dc=local"
+ldap_admin_role: "Admin"
+
+ldap_viewer_group: "cn=grafana-members,cn=groups,cn=accounts,dc=kaust,dc=local"
+ldap_viewer_role: "Viewer"
+
+ldap_project_group_admin_pattern: "(cn=grafana-admins-project-*)"
+ldap_project_admin_role: "Editor"
+
+ldap_project_group_members_pattern: "(cn=grafana-project-*)"
+ldap_project_member_role: "Viewer"
+

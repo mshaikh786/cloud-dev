@@ -1,0 +1,174 @@
+# Dashboards Role Tasks
+---
+- name: Create kube-prometheus-stack-grafana secret
+  shell: |
+    kubectl create secret generic kube-prometheus-stack-grafana \
+      --from-literal=admin-user={{ grafana_admin_user }} \
+      --from-literal=admin-password={{ grafana_admin_password }} \
+      --from-literal=grafana-url={{ GRAFANA_URL }}:{{ grafana_port }} \
+      -n {{ grafana_namespace }} \
+      --dry-run=client -o yaml | kubectl apply -f -
+  tags:
+    - secrets
+    - grafana
+
+- name: Create LDAP credentials secret
+  shell: |
+    kubectl create secret generic ldap-credentials \
+      --from-literal=base_dn="{{ ldap_base_dn }}" \
+      --from-literal=password="{{ ldap_password }}" \
+      --from-literal=server="{{ ldap_server }}" \
+      --from-literal=username="{{ ldap_username }}" \
+      --from-literal=ldap-project-group-annotation="{{ LDAP_PROJECT_GROUP_ANNOTATION }}" \
+      --from-literal=ldap-project-admin-group-annotation="{{ LDAP_PROJECT_ADMIN_GROUP_ANNOTATION }}" \
+      -n {{ grafana_namespace }} \
+      --dry-run=client -o yaml | kubectl apply -f -
+  tags:
+    - secrets
+    - ldap
+
+- name: Create temporary directory for dashboard files
+  file:
+    path: /tmp/dashboard-configs
+    state: directory
+    mode: '0755'
+  tags:
+    - dashboards
+    - copy
+
+- name: Copy user dashboard configuration to remote
+  copy:
+    src: "{{ user_dashboard_config_file }}"
+    dest: "/tmp/dashboard-configs/{{ user_dashboard_config_file }}"
+    mode: '0644'
+  tags:
+    - dashboards
+    - copy
+
+- name: Copy cronjob user dashboards to remote
+  copy:
+    src: "{{ cronjob_user_file }}"
+    dest: "/tmp/dashboard-configs/{{ cronjob_user_file }}"
+    mode: '0644'
+  tags:
+    - dashboards
+    - copy
+
+
+- name: Copy rbac file to remote
+  copy:
+    src: "{{ rbac_role_file }}"
+    dest: "/tmp/dashboard-configs/{{ rbac_role_file }}"
+    mode: '0644'
+  tags:
+    - dashboards
+    - copy
+
+- name: Copy cronjob PL dashboards to remote
+  copy:
+    src: "{{ cronjob_pl_file }}"
+    dest: "/tmp/dashboard-configs/{{ cronjob_pl_file }}"
+    mode: '0644'
+  tags:
+    - dashboards
+    - copy
+
+- name: Copy K8s admins dashboards to remote
+  copy:
+    src: "{{ k8s_admins_file }}"
+    dest: "/tmp/dashboard-configs/{{ k8s_admins_file }}"
+    mode: '0644'
+  tags:
+    - dashboards
+    - copy
+
+- name: Copy folder permissions configuration to remote
+  copy:
+    src: "{{ folder_permissions_file }}"
+    dest: "/tmp/dashboard-configs/{{ folder_permissions_file }}"
+    mode: '0644'
+  tags:
+    - dashboards
+    - copy
+
+- name: Apply rbac_role_file configuration
+  shell: |
+    kubectl apply -f /tmp/dashboard-configs/{{ rbac_role_file }}
+  tags:
+    - dashboards
+    - user-config
+
+- name: Create ClusterRoleBinding YAML file
+  copy:
+    content: |
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: grafana-dashboard-creator
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: grafana-dashboard-creator
+      subjects:
+      - kind: ServiceAccount
+        name: grafana-dashboard-creator
+        namespace: {{ grafana_namespace }}
+    dest: /tmp/grafana-dashboard-creator-clusterrolebinding.yaml
+    mode: '0644'
+  tags:
+    - rbac
+    - clusterrolebinding
+
+- name: Apply ClusterRoleBinding for grafana-dashboard-creator
+  shell: |
+    kubectl apply -f /tmp/grafana-dashboard-creator-clusterrolebinding.yaml
+  tags:
+    - rbac
+    - clusterrolebinding
+
+
+- name: Apply user dashboard configuration
+  shell: |
+    kubectl apply -f /tmp/dashboard-configs/{{ user_dashboard_config_file }} -n {{ grafana_namespace }}
+  tags:
+    - dashboards
+    - user-config
+
+- name: Apply cronjob user dashboards
+  shell: |
+    kubectl apply -f /tmp/dashboard-configs/{{ cronjob_user_file }} -n {{ grafana_namespace }}
+  tags:
+    - dashboards
+    - cronjob
+    - user
+
+- name: Apply cronjob PL dashboards
+  shell: |
+    kubectl apply -f /tmp/dashboard-configs/{{ cronjob_pl_file }} -n {{ grafana_namespace }}
+  tags:
+    - dashboards
+    - cronjob
+    - pl
+
+- name: Apply K8s admins dashboards
+  shell: |
+    kubectl apply -f /tmp/dashboard-configs/{{ k8s_admins_file }} -n {{ grafana_namespace }}
+  tags:
+    - dashboards
+    - k8s-admins
+
+- name: Apply folder permissions configuration
+  shell: |
+    kubectl apply -f /tmp/dashboard-configs/{{ folder_permissions_file }} -n {{ grafana_namespace }}
+  tags:
+    - dashboards
+    - permissions
+
+- name: Clean up temporary directory
+  file:
+    path: /tmp/dashboard-configs
+    state: absent
+  tags:
+    - dashboards
+    - cleanup

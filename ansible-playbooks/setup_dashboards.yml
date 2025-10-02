@@ -1,0 +1,8 @@
+---
+- name: Setup Grafana Dashboards
+  hosts: server1
+  gather_facts: false
+  become: false
+  roles:
+    - dashboards
+

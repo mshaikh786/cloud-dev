@@ -1,0 +1,149 @@
+- name: Update OpenSSH to the latest version
+  apt:
+    name:
+      - openssh-server
+      - openssh-client
+    state: latest
+    update_cache: yes
+    
+- name: Create directory for RKE2 config
+  ansible.builtin.file:
+    path: "/etc/rancher/rke2"
+    state: directory
+    mode: '0755'
+
+- name: Create directory for RKE2 token
+  ansible.builtin.file:
+    path: "/var/lib/rancher/rke2/server"
+    state: directory
+    mode: '0755'
+
+- name: Deploy RKE2 server Configuration on servers
+  ansible.builtin.template:
+    src: templates/rke2-server-config.j2
+    dest: /etc/rancher/rke2/config.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  vars:
+    token: "{{ hostvars['server1'].rke2_token | default('') }}"
+  when: inventory_hostname in groups['servers']
+
+- name: Create systemd service file for RKE2 server
+  ansible.builtin.template:
+    src: templates/rke2-server.service.j2
+    dest: /etc/systemd/system/rke2-server.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: inventory_hostname in groups['servers']
+
+- name: Create systemd service file for RKE2 agent
+  ansible.builtin.template:
+    src: templates/rke2-agent.service.j2
+    dest: /etc/systemd/system/rke2-agent.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: inventory_hostname in groups['agents']
+
+- name: Ensure RKE2 server is enabled and running (only on the first server)
+  ansible.builtin.systemd:
+    name: rke2-server
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Wait for node-token to be available on the first server
+  ansible.builtin.wait_for:
+    path: /var/lib/rancher/rke2/server/node-token
+    delay: 10
+    timeout: 300
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Wait for kubectl binary to be available on the first server
+  ansible.builtin.wait_for:
+    path: /var/lib/rancher/rke2/bin/kubectl
+    delay: 10
+    timeout: 300
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Copy kubectl to user bin on the first server
+  ansible.builtin.copy:
+    src: /var/lib/rancher/rke2/bin/kubectl
+    dest: /usr/local/bin/kubectl
+    mode: '0755'
+    remote_src: true
+  become: true
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Wait for kubectl to be copied on the first server
+  ansible.builtin.wait_for:
+    path: /usr/local/bin/kubectl
+    delay: 10
+    timeout: 300
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Register node-token directory permissions
+  ansible.builtin.stat:
+    path: /var/lib/rancher/rke2/server
+  register: token_dir_stat
+
+- name: Change file access for node-token directory on the first server
+  ansible.builtin.file:
+    path: /var/lib/rancher/rke2/server
+    mode: "g+rx,o+rx"
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Wait for node-token to be available on the first server
+  ansible.builtin.wait_for:
+    path: /var/lib/rancher/rke2/server/node-token
+    delay: 30
+    timeout: 120
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Restore node-token directory permissions on the first server
+  ansible.builtin.file:
+    path: /var/lib/rancher/rke2/server
+    mode: "{{ token_dir_stat.stat.mode }}"
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Read token file content
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/rke2/server/node-token
+  register: token_file_content
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Save token as a fact on all hosts
+  set_fact:
+    rke2_token: "{{ hostvars[groups['servers'][0]]['token_file_content']['content'] | b64decode | trim }}"
+  run_once: false
+  
+- name: Debug token value on agents
+  debug:
+    msg: "Agent token value: {{ hostvars['server1']['rke2_token'] | default('Not set') }}"
+  when: inventory_hostname in groups['agents']
+
+- name: Ensure .kube directory exists in user's home
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Copy kubeconfig to user's .kube directory on the first server
+  ansible.builtin.copy:
+    src: /etc/rancher/rke2/rke2.yaml
+    dest: "/home/{{ ansible_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user }}"
+    mode: "0644"
+  when: inventory_hostname == groups['servers'][0]
+
+- name: Replace localhost IP with server1's IP in kubeconfig on the first server
+  ansible.builtin.replace:
+    path: /home/{{ ansible_user }}/.kube/config
+    regexp: '127.0.0.1'
+    replace: "{{ hostvars['server1']['ansible_host'] }}"
+  when: inventory_hostname == groups['servers'][0]

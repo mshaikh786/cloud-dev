@@ -1,0 +1,195 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grafana-dashboard-creator
+spec:
+  schedule: "*/1 * * * *"  # Run every minute
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: grafana-dashboard-creator  # Add service account for k8s API access
+          containers:
+          - name: dashboard-creator
+            image: google/cloud-sdk:alpine
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # Install jq (kubectl and curl already available)
+              apk add --no-cache jq
+              
+              if ! command -v kubectl &> /dev/null; then
+                echo "Installing kubectl..."
+                curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+                chmod +x kubectl
+                mv kubectl /usr/local/bin/
+                echo "✅ kubectl installed successfully"
+              else
+                echo "✅ kubectl already available"
+              fi
+              
+              GRAFANA_URL=$(cat /etc/grafana-auth/grafana-url)
+              ADMIN_USER=$(cat /etc/grafana-auth/admin-user)
+              ADMIN_PASSWORD=$(cat /etc/grafana-auth/admin-password)
+              DASHBOARD_JSON=$(cat /etc/dashboard/dashboard.json)
+              
+              # Get all users from Grafana API
+              USER_LIST=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/users")
+              
+              if [ $? -ne 0 ] || [ -z "$USER_LIST" ]; then
+                echo "Error: Failed to fetch users from Grafana API"
+                exit 1
+              fi
+              
+              # Loop through each user
+              for user_json in $(echo "$USER_LIST" | jq -r '.[] | @base64'); do
+                # Decode user data
+                user_data=$(echo "$user_json" | base64 -d)
+                user_login=$(echo "$user_data" | jq -r '.login')
+                user_email=$(echo "$user_data" | jq -r '.email // .login')
+                
+                echo "========================================="
+                echo "Processing user: $user_login (email: $user_email)"
+                echo "========================================="
+                
+                # Find namespaces owned by this user
+                echo "Searching for namespaces owned by: $user_email"
+                
+                # Get all namespaces with owner annotation matching user email
+                OWNED_NAMESPACES=$(kubectl get namespaces -o json | jq -r --arg email "$user_email" '
+                  .items[] | 
+                  select(.metadata.annotations.owner == $email) | 
+                  .metadata.name
+                ')
+                
+                if [ -z "$OWNED_NAMESPACES" ]; then
+                  echo "No namespaces found for user: $user_email"
+                  echo "Checking for namespaces with owner annotation containing user login: $user_login"
+                  
+                  # Fallback: search for namespaces that might contain the username
+                  OWNED_NAMESPACES=$(kubectl get namespaces -o json | jq -r --arg login "$user_login" '
+                    .items[] | 
+                    select(.metadata.annotations.owner != null and (.metadata.annotations.owner | contains($login))) | 
+                    .metadata.name
+                  ')
+                fi
+                
+                if [ -n "$OWNED_NAMESPACES" ]; then
+                  echo "Found namespaces for $user_email:"
+                  namespace_count=0
+                  namespace_list=""
+                  for ns in $OWNED_NAMESPACES; do
+                    echo "  - $ns"
+                    namespace_count=$((namespace_count + 1))
+                    if [ -z "$namespace_list" ]; then
+                      namespace_list="$ns"
+                    else
+                      namespace_list="$namespace_list,$ns"
+                    fi
+                  done
+                  echo "Total namespaces found: $namespace_count"
+                else
+                  echo "No namespaces found for user: $user_email"
+                  # Continue to next user
+                  continue
+                fi
+                
+                # Create sanitized username for UID (replace dots with underscores)
+                SANITIZED_USER=$(echo "$user_login" | sed 's/\./_/g')
+                
+                # Define a unique UID for each user's dashboard using sanitized username
+                DASHBOARD_UID="k8s_${SANITIZED_USER}_views_ns"
+                
+                # Check if the dashboard already exists
+                EXISTS=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/dashboards/uid/$DASHBOARD_UID")
+                if [ "$(echo "$EXISTS" | jq -r '.dashboard.id // empty')" != "" ]; then
+                  echo "Dashboard for $user_login already exists. Skipping creation."
+                  continue
+                fi
+                
+                # Modify the dashboard JSON: remove id and customize fields
+                # Use the actual namespaces found for this user
+                MODIFIED_JSON=$(echo "$DASHBOARD_JSON" | jq --arg title "$user_login's Namespace Dashboard" --arg uid "$DASHBOARD_UID" --arg nslist "$namespace_list" --arg user "$user_login" '
+                  del(.id) |
+                  .title = $title |
+                  .uid = $uid |
+                  (.templating.list[] | select(.name == "namespace").current.text) = ($nslist | split(",")) |
+                  (.templating.list[] | select(.name == "namespace").current.value) = ($nslist | split(",")) |
+                  (.templating.list[] | select(.name == "namespace").regex) = "^(" + ($nslist | split(",") | join("|")) + ")$"
+                ')
+                
+                # Create the dashboard
+                echo "Creating dashboard for $user_login with namespaces: $namespace_list"
+                CREATE_RESPONSE=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+                  -X POST \
+                  -H "Content-Type: application/json" \
+                  -d "{\"dashboard\": $MODIFIED_JSON, \"folderId\": 0, \"overwrite\": false}" \
+                  "$GRAFANA_URL/api/dashboards/db")
+                
+                # Verify creation success
+                if [ "$(echo "$CREATE_RESPONSE" | jq -r '.status')" == "success" ]; then
+                  DASHBOARD_ID=$(echo "$CREATE_RESPONSE" | jq -r '.id')
+                  echo "✅ Successfully created dashboard for $user_login with ID $DASHBOARD_ID (UID: $DASHBOARD_UID)"
+                else
+                  echo "❌ Error creating dashboard for $user_login: $(echo "$CREATE_RESPONSE" | jq -r '.message')"
+                  continue
+                fi
+                
+                # Retrieve user ID for permissions
+                USER_ID=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" "$GRAFANA_URL/api/users/lookup?loginOrEmail=$user_login" | jq -r '.id')
+                if [ -z "$USER_ID" ] || [ "$USER_ID" == "null" ]; then
+                  echo "Error: Could not find user ID for $user_login"
+                  continue
+                fi
+                
+                # Set permissions
+                PERM_RESPONSE=$(curl -s -u "$ADMIN_USER:$ADMIN_PASSWORD" \
+                  -X POST \
+                  -H "Content-Type: application/json" \
+                  -d "{\"items\": [{\"userId\": $USER_ID, \"permission\": 1}]}" \
+                  "$GRAFANA_URL/api/dashboards/id/$DASHBOARD_ID/permissions")
+                
+                # Verify permission setting success
+                if [ "$(echo "$PERM_RESPONSE" | jq -r '.status')" == "success" ]; then
+                  echo "✅ Successfully set permissions for $user_login's dashboard"
+                else
+                  echo "❌ Error setting permissions for $user_login: $(echo "$PERM_RESPONSE" | jq -r '.message')"
+                fi
+                
+                echo "Completed processing for $user_login"
+                echo ""
+              done
+
+              echo "========================================="
+              echo "Job completed at $(date)"
+              echo "========================================="
+            volumeMounts:
+            - name: grafana-auth
+              mountPath: /etc/grafana-auth
+              readOnly: true
+            - name: dashboard-config
+              mountPath: /etc/dashboard
+          volumes:
+          - name: grafana-auth
+            secret:
+              secretName: kube-prometheus-stack-grafana
+              items:
+              - key: admin-user
+                path: admin-user
+              - key: admin-password
+                path: admin-password
+              - key: grafana-url
+                path: grafana-url
+          - name: dashboard-config
+            configMap:
+              name: user-dashboard
+          restartPolicy: OnFailure
+---
+# Required RBAC for namespace access
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-dashboard-creator

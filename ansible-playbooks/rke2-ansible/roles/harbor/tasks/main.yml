@@ -1,0 +1,176 @@
+---
+# Harbor deployment tasks
+
+
+- name: Add Harbor Helm repository
+  shell: |
+    helm repo add harbor https://helm.goharbor.io
+    helm repo update
+
+- name: Clean up any existing Harbor chart download
+  shell: rm -rf /tmp/harbor
+  ignore_errors: true
+
+- name: Clean up any existing Harbor secrets (to prevent template errors)
+  shell: |
+    kubectl delete secrets -n {{ harbor_namespace }} --all
+  ignore_errors: true
+
+- name: Create Harbor namespace
+  shell: |
+    helm repo add harbor https://helm.goharbor.io
+    helm repo update
+    kubectl create namespace {{ harbor_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+
+
+    helm repo add harbor https://helm.goharbor.io
+    helm repo update
+    kubectl create namespace {{ harbor_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+
+- name: Download Harbor Helm chart
+  shell: |
+    cd /tmp
+    helm fetch harbor/harbor --version {{ harbor_chart_version }} --untar
+  args:
+    creates: /tmp/harbor
+
+- name: Update Harbor values.yaml
+  shell: |
+    cd /tmp/harbor
+    
+    # Update ingress host
+    sed -i 's/core: core.harbor.domain/core: {{ harbor_ingress_host }}/' values.yaml
+    
+    # Update external URL
+    sed -i 's|externalURL: https://core.harbor.domain|externalURL: {{ harbor_external_url }}|' values.yaml
+    
+    # Update storage class
+    sed -i 's/storageClass: ""/storageClass: "{{ harbor_storage_class }}"/g' values.yaml
+    
+    # Update admin password
+    sed -i 's/harborAdminPassword: "Harbor12345"/harborAdminPassword: "{{ harbor_admin_password }}"/' values.yaml
+    
+    # Add nginx.org annotation to existing annotations block
+    sed -i '/nginx.ingress.kubernetes.io\/proxy-body-size: "0"/a\      nginx.org/client-max-body-size: "0"' values.yaml
+
+
+- name: Install Harbor using Helm
+  shell: |
+    helm install {{ harbor_release_name }} /tmp/harbor/ \
+      --namespace {{ harbor_namespace }} \
+      --create-namespace \
+      --wait \
+      --timeout 10m
+
+- name: Verify Harbor deployment
+  shell: |
+    kubectl get pods -n {{ harbor_namespace }}
+  register: harbor_pods
+
+- name: Display Harbor pods status
+  debug:
+    msg: "{{ harbor_pods.stdout_lines }}"
+
+- name: Display Harbor access information
+  debug:
+    msg:
+      - "Harbor deployed successfully!"
+      - "Access URL: {{ harbor_external_url }}"
+      - "Username: admin"
+      - "Password: {{ harbor_admin_password }}"
+  
+- name: Display Harbor pods status
+  debug:
+    msg: "{{ harbor_pods.stdout_lines }}"
+
+- name: Add Harbor entry to /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ ingress_ip }} {{ harbor_ingress_host }}"
+    regexp: ".*{{ harbor_ingress_host }}.*"
+    state: present
+    backup: yes
+  when: add_hosts_entry | default(false)
+  become: yes
+
+- name: Display Harbor access information
+  debug:
+    msg:
+      - "Harbor deployed successfully!"
+      - "Access URL: {{ harbor_external_url }}"
+      - "Username: admin"
+      - "Password: {{ harbor_admin_password }}"
+      - "Hosts entry: {{ ingress_ip }} {{ harbor_ingress_host }} {{ '(ADDED)' if add_hosts_entry else '(NOT ADDED)' }}"
+
+- name: Wait for Harbor API to be ready
+  uri:
+    url: "{{ harbor_external_url }}/api/v2.0/health"
+    method: GET
+    validate_certs: "{{harbor_ssl_verify | default(false)}}"
+    status_code: 200
+  register: harbor_health
+  until: harbor_health.status == 200
+  retries: 30
+  delay: 10
+  when: ldap_enabled | default(false)
+
+- name: Configure Harbor LDAP authentication
+  uri:
+    url: "{{ harbor_external_url }}/api/v2.0/configurations"
+    method: PUT
+    validate_certs: "{{harbor_ssl_verify | default(false)}}"
+    user: admin
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: yes
+    body_format: json
+    body:
+      auth_mode: "ldap_auth"
+      ldap_url: "{{ ldap_url }}"
+      ldap_search_dn: "{{ ldap_search_dn }}"
+      ldap_search_password: "{{ ldap_search_password }}"
+      ldap_base_dn: "{{ ldap_base_dn }}"
+      ldap_filter: "{{ ldap_filter }}"
+      ldap_uid: "{{ ldap_uid }}"
+      ldap_scope: "{{ ldap_scope }}"
+      ldap_group_base_dn: "{{ ldap_group_base_dn }}"
+      ldap_group_search_filter: "{{ ldap_group_search_filter }}"
+      ldap_group_attribute_name: "{{ ldap_group_attribute_name }}"
+      ldap_group_admin_dn: "{{ ldap_group_admin_dn }}"
+      ldap_group_membership_attribute: "{{ ldap_group_membership_attribute }}"
+      ldap_group_search_scope: "{{ ldap_group_search_scope }}"
+      ldap_verify_cert: "{{ ldap_verify_cert }}"
+    status_code: 200
+  when: ldap_enabled | default(false)
+  register: ldap_config_result
+
+- name: Test LDAP connection
+  uri:
+    url: "{{ harbor_external_url }}/api/v2.0/ldap/ping"
+    method: POST
+    user: admin
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: yes
+    validate_certs: "{{harbor_skip_ssl_verify | default(false)}}"
+    body_format: json
+    body:
+      ldap_url: "{{ ldap_url }}"
+      ldap_search_dn: "{{ ldap_search_dn }}"
+      ldap_search_password: "{{ ldap_search_password }}"
+      ldap_base_dn: "{{ ldap_base_dn }}"
+      ldap_filter: "{{ ldap_filter }}"
+      ldap_uid: "{{ ldap_uid }}"
+      ldap_scope: "{{ ldap_scope }}"
+      ldap_verify_cert: "{{ ldap_verify_cert }}"
+    status_code: 200
+  when: ldap_enabled | default(false)
+  register: ldap_test_result
+
+- name: Display LDAP configuration status
+  debug:
+    msg:
+      - "LDAP Configuration Status: {{ 'SUCCESS' if ldap_config_result.status == 200 else 'FAILED' }}"
+      - "LDAP Connection Test: {{ 'SUCCESS' if ldap_test_result.status == 200 else 'FAILED' }}"
+      - "LDAP URL: {{ ldap_url }}"
+      - "Admin Group: {{ ldap_group_admin_dn }}"
+  when: ldap_enabled | default(false)
+

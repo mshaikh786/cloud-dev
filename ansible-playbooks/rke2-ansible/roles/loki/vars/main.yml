@@ -1,0 +1,25 @@
+---
+# Loki deployment variables
+loki_namespace: loki
+loki_release_name: loki
+
+# Basic Auth credentials
+loki_username: admin
+loki_password: admin123
+
+# logs retention configuration
+log_retention_days: 28      # 28 days retention
+
+
+#For S3 see the buckets setup LOKI_S3_GUIDE.md
+
+# s3 configuration
+s3_endpoint: "https://s3.amazonaws.com"
+s3_region: "us-east-1"
+s3_access_key: "AKIA2THJRL4ZZUVI"
+s3_secret_key: "ntwESelqlg0JAgAPRmJGFuy4TzVS9aEVH6i5"
+s3_chunks_bucket: "kaust-chunks-loki"
+s3_ruler_bucket: "kaust-ruler-loki"
+
+# Alertmanager URL
+alertmanager_url: "http://prom:9093"

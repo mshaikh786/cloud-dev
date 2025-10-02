@@ -1,0 +1,41 @@
+---
+# Harbor deployment variables
+harbor_ingress_host: "harbor.cluster.local"
+harbor_ingress_class: "nginx"
+harbor_external_url: "https://harbor.cluster.local"
+harbor_storage_class: "nfs-storage"
+harbor_admin_password: "Harbor12345"
+harbor_chart_version: "1.13.0"
+
+# Helm settings
+harbor_namespace: "harbor"
+harbor_release_name: "harbor"
+
+# /etc/hosts configuration for sending the API calls to the Harbor server
+# This is useful for local development or testing environments where DNS resolution is not set up.
+# In production, you would typically set up DNS records instead of modifying /etc/hosts.
+# Set to true if you want to add an entry to /etc/hosts for the Harbor server.
+# Make sure the IP address matches the one where Harbor will be accessible.
+add_hosts_entry: true
+ingress_ip: "10.0.1.11"  # IP address where Harbor will be accessible
+
+# SSL Configuration
+harbor_ssl_verify: false # Set to true if you have a valid SSL certificate for Harbor
+
+
+# LDAP Configuration
+ldap_enabled: true # Set to true to enable LDAP authentication
+ldap_url: "ldap://63.176.217.151"
+ldap_search_dn: "uid=admin,cn=users,cn=accounts,dc=kaust,dc=local"
+ldap_search_password: "admin2026"
+ldap_base_dn: "cn=users,cn=accounts,dc=kaust,dc=local"
+ldap_filter: "(&(objectClass=person)(memberOf=cn=harbor-members,cn=groups,cn=accounts,dc=kaust,dc=local))"
+ldap_uid: "uid"
+ldap_scope: 2  # Subtree
+ldap_group_base_dn: "cn=groups,cn=accounts,dc=kaust,dc=local"
+ldap_group_search_filter: "(cn=harbor-*)"
+ldap_group_attribute_name: "cn"
+ldap_group_admin_dn: "cn=harbor-admins,cn=groups,cn=accounts,dc=kaust,dc=local"
+ldap_group_membership_attribute: "memberof"
+ldap_group_search_scope: 2  # Subtree
+ldap_verify_cert: false  # Set to true if you have a valid SSL certificate

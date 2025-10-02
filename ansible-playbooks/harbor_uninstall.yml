@@ -1,0 +1,21 @@
+---
+- name: Uninstall Harbor Registry
+  hosts: server1
+  gather_facts: false
+  vars:
+    harbor_namespace: "harbor"
+    harbor_release_name: "harbor"
+  
+  tasks:
+    - name: Uninstall Harbor
+      shell: |
+        helm uninstall {{ harbor_release_name }} -n {{ harbor_namespace }}
+    
+    - name: Delete namespace
+      shell: |
+        kubectl delete namespace {{ harbor_namespace }}
+      ignore_errors: true
+    
+    - name: Clean up temp files
+      shell: rm -rf /tmp/harbor
+      ignore_errors: true

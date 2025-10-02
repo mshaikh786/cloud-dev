@@ -1,0 +1,16 @@
+---
+- name: download and unarchive helm package
+  ansible.builtin.unarchive:
+    src: https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz
+    dest: /opt/
+    remote_src: yes
+
+- name: copy helm exec bin file to /usr/local/bin and /sbin
+  ansible.builtin.copy:
+    src: /opt/linux-amd64/helm
+    dest: "{{ item }}"
+    mode: '0755'
+    remote_src: yes
+  loop:
+    - /usr/local/bin/helm
+    - /usr/local/sbin/helm

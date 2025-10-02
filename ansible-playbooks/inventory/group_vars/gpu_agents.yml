@@ -1,0 +1,4 @@
+---
+# GPU node specific configuration
+gpu_enabled: true
+container_runtime: "containerd"

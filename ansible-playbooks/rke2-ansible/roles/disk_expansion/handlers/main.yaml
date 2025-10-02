@@ -1,0 +1,8 @@
+---
+# handlers/main.yml
+
+- name: reread partition table
+  ansible.builtin.command: partprobe
+
+- name: refresh facts
+  ansible.builtin.setup:

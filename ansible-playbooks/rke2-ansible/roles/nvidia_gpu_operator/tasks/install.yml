@@ -1,0 +1,126 @@
+---
+# Step 1: Add NVIDIA Helm repository
+- name: Add NVIDIA Helm repository
+  ansible.builtin.shell: helm repo add nvidia {{ nvidia_helm_repo }}
+  changed_when: false
+
+- name: Update Helm repositories
+  ansible.builtin.shell: helm repo update
+  changed_when: false
+
+# Step 2: Clean up previous installations if they exist
+- name: Clean up previous GPU Operator installations
+  block:
+    - name: Check if GPU Operator is already installed
+      ansible.builtin.shell: helm list -n {{ gpu_operator_namespace }} | grep {{ gpu_operator_release_name }} || echo ""
+      register: existing_operator
+      changed_when: false
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Uninstall previous GPU Operator if exists
+      ansible.builtin.shell: |
+        helm uninstall {{ gpu_operator_release_name }} -n {{ gpu_operator_namespace }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      when: existing_operator.stdout != ""
+      failed_when: false
+
+    - name: Clean up GPU Operator CRDs and namespaces
+      ansible.builtin.shell: |
+        kubectl delete clusterpolicies.nvidia.com --all --ignore-not-found
+        kubectl delete namespace {{ gpu_operator_namespace }} --ignore-not-found
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      failed_when: false
+      changed_when: true
+
+# Step 3: Create the DCGM ConfigMap
+- name: Create namespace for GPU Operator
+  ansible.builtin.shell: |
+    kubectl create namespace {{ gpu_operator_namespace }} --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  changed_when: false
+
+- name: Create DCGM Exporter ConfigMap
+  ansible.builtin.shell: |
+    cat << EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: {{ dcgm_exporter_config_name }}
+      namespace: {{ gpu_operator_namespace }}
+    data:
+      dcgm-metrics.csv: |
+        # Format: <FieldID>,<Prometheus Type>,<Tag>
+        DCGM_FI_DEV_GPU_UTIL,gauge,gpu_utilization
+        DCGM_FI_DEV_MEM_COPY_UTIL,gauge,memory_utilization
+        DCGM_FI_DEV_FB_FREE,gauge,framebuffer_free_memory
+        DCGM_FI_DEV_FB_USED,gauge,framebuffer_used_memory
+        DCGM_FI_DEV_FB_TOTAL,gauge,framebuffer_total_memory
+        DCGM_FI_DEV_GPU_TEMP,gauge,gpu_temperature
+        DCGM_FI_DEV_POWER_USAGE,gauge,power_usage
+    EOF
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  changed_when: true
+
+# Step 4: Label nodes with GPU
+- name: Label nodes with NVIDIA GPU 
+  ansible.builtin.shell: |
+    for node in $(kubectl get nodes -o name); do
+      kubectl label node ${node#node/} nvidia.com/gpu=true --overwrite
+    done
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  changed_when: true
+
+# Step 5: Install GPU Operator using Helm with complete configuration
+- name: Install NVIDIA GPU Operator
+  ansible.builtin.shell: |
+    helm install --wait {{ gpu_operator_release_name }} nvidia/gpu-operator \
+      -n {{ gpu_operator_namespace }} --create-namespace \
+      --set driver.enabled={{ driver_enabled }} \
+      --set operator.defaultRuntime={{ default_runtime }} \
+      --set toolkit.env[0].name=CONTAINERD_CONFIG \
+      --set toolkit.env[0].value={{ rke2_containerd_config }} \
+      --set toolkit.env[1].name=CONTAINERD_SOCKET \
+      --set toolkit.env[1].value={{ rke2_containerd_socket }} \
+      --set toolkit.env[2].name=CONTAINERD_RUNTIME_CLASS \
+      --set toolkit.env[2].value=nvidia \
+      --set toolkit.env[3].name=CONTAINERD_SET_AS_DEFAULT \
+      --set-string toolkit.env[3].value=true \
+      --set dcgmExporter.enabled={{ dcgm_exporter_enabled }} \
+      --set dcgmExporter.config.name={{ dcgm_exporter_config_name }}
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: gpu_operator_install
+
+- name: Display GPU Operator installation output
+  ansible.builtin.debug:
+    var: gpu_operator_install.stdout_lines
+
+# Step 6: Verify the installation
+- name: Wait for GPU operator to be ready
+  ansible.builtin.shell: |
+    kubectl get pods -n {{ gpu_operator_namespace }}
+  register: gpu_pods
+  until: gpu_pods.rc == 0 and gpu_pods.stdout is search('Running') and gpu_pods.stdout is not search('Error|CrashLoopBackOff')
+  retries: 30
+  delay: 10
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  changed_when: false
+
+- name: Display GPU operator pods
+  ansible.builtin.shell: |
+    kubectl get pods -n {{ gpu_operator_namespace }}
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: final_pods
+  changed_when: false
+
+- name: Show GPU operator status
+  ansible.builtin.debug:
+    var: final_pods.stdout_lines

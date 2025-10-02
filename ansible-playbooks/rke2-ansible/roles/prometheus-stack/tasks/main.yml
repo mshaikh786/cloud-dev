@@ -1,0 +1,9 @@
+---
+# tasks file for prometheus-stack
+- name: install prometheus-stack
+  include_tasks: install.yml
+  when: state | default('present') == 'present'
+
+- name: uninstall prometheus-stack
+  include_tasks: uninstall.yml
+  when: state | default('present') == 'absent'

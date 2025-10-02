@@ -1,0 +1,22 @@
+---
+- name: Check if node has NVIDIA GPU
+  ansible.builtin.shell: lspci | grep -i nvidia
+  register: has_gpu
+  failed_when: false
+  changed_when: false
+
+- name: Set up NVIDIA GPU Operator
+  ansible.builtin.include_tasks: install.yml
+  when: has_gpu.rc == 0 or inventory_hostname in groups['servers']
+
+- name: Get NVIDIA information (if GPU present)
+  ansible.builtin.shell: nvidia-smi
+  register: nvidia_smi_output
+  failed_when: false
+  changed_when: false
+  when: has_gpu.rc == 0
+  
+- name: Display NVIDIA information
+  ansible.builtin.debug:
+    var: nvidia_smi_output.stdout_lines
+  when: has_gpu.rc == 0 and nvidia_smi_output.rc == 0
