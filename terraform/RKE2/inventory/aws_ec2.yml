@@ -1,0 +1,17 @@
+# RKE2 Cluster Inventory
+
+[servers]
+master ansible_host=3.126.152.239
+
+[agents]
+worker1 ansible_host=10.0.0.10
+worker2 ansible_host=10.0.0.11
+
+[rke2:children]
+servers
+agents
+
+[rke2:vars]
+ansible_user=rocky
+ansible_ssh_private_key_file=/Users/ChoudhryShehryar/Documents/cloud-dev/scripts/../ssh-key/rke-choudhry.pem
+ansible_ssh_common_args='-F /Users/ChoudhryShehryar/.ssh/config'

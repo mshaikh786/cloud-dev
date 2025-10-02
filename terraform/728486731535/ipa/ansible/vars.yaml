@@ -1,0 +1,27 @@
+---
+# Base variables - matching exactly your command
+ipaserver:
+  - ipaserver.kaust.local
+ipadm_password: admin2025
+ipaadmin_password: admin2025
+ipaserver_ip_addresses:
+  - 10.0.1.110
+ipaserver_domain: kaust.local
+ipaserver_realm: KAUST.LOCAL
+ipaserver_hostname: ipaserver.kaust.local
+
+# Server variables
+ipaserver_setup_dns: true
+
+# DNS variables
+ipaserver_no_forwarders: true
+ipaserver_no_reverse: true
+
+# Client variables
+ipaclient_mkhomedir: true # For --mkhomedir option
+
+# Special variables
+ipaserver_setup_firewalld: false # Not managing firewall - ports already open
+
+# Unattended installation
+ipaserver_setup_on_machine: true # For -U (unattended) option

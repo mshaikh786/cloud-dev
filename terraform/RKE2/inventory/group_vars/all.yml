@@ -1,0 +1,20 @@
+---
+os: "linux"
+arch: "amd64"
+
+# VIP address should use master's private IP
+vip: "10.0.1.10"
+
+metallb_version: v0.13.12
+# MetalLB IP range for load balancers
+lb_range: "10.0.1.80-10.0.1.90"
+lb_pool_name: first-pool
+
+ansible_become: true
+ansible_become_method: sudo
+
+# AWS-specific settings
+vip_interface: "eth0"
+
+# Cluster information
+cluster_name: "test-cluster"
